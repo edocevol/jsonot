@@ -159,7 +159,7 @@ func (n *NumberAddSubType) Invert(path Path, subTypeOperand Value) mo.Result[Ope
 	val := subTypeOperand.GetNumeric().MustGet()
 	invertVal := ValueFromPrimitive(-val)
 
-	if subTypeOperand.IsNumeric() {
+	if subTypeOperand.IsInt() {
 		return mo.Ok[Operator](NewSubTypeOperator(NewNumberAdd(), invertVal, n))
 	}
 

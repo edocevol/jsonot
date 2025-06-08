@@ -87,6 +87,14 @@ func (ot *JSONOperationTransformer) OperationComponentsFromNode(
 	return mo.Err[[]*OperationComponent](fmt.Errorf("unsupported node type: %d", node.Type()))
 }
 
+// OperationComponentFromValue 创建一个操作组件
+func (ot *JSONOperationTransformer) OperationComponentFromValue(value Value) mo.Result[*OperationComponent] {
+	if !value.IsObject() {
+		return mo.Err[*OperationComponent](fmt.Errorf("expected object node, got: %s", value.Type()))
+	}
+	return ot.operationFaction.OperationComponentFromValue(value)
+}
+
 // Apply 将操作应用到给定的 JSON 节点上
 func (ot *JSONOperationTransformer) Apply(
 	ctx context.Context, value Value, operations *Operation,
@@ -135,4 +143,24 @@ func (ot *JSONOperationTransformer) Transform(
 	}
 
 	return nil, nil, fmt.Errorf("transform failed: %w", left.Error())
+}
+
+// Invert 将操作反转
+func (ot *JSONOperationTransformer) Invert(
+	ctx context.Context, operations *Operation,
+) mo.Result[*Operation] {
+	if operations.Len() == 0 {
+		return mo.Ok(NewOperation([]*OperationComponent{}))
+	}
+
+	invertedComponents := make([]*OperationComponent, 0, operations.Len())
+	for _, op := range operations.Array() {
+		inverted := op.Invert()
+		if inverted.IsError() {
+			return mo.Err[*Operation](inverted.Error())
+		}
+		invertedComponents = append(invertedComponents, inverted.MustGet())
+	}
+
+	return mo.Ok(NewOperation(invertedComponents))
 }

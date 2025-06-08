@@ -117,7 +117,7 @@ func (oc *OperationComponent) Invert() mo.Result[*OperationComponent] {
 	case *Noop:
 		operator = &Noop{}
 	case *SubTypeOperator:
-		operator, _ = op.SubTypeFunctions.Invert(path, op.Value).Get()
+	operator, _ = op.SubTypeFunctions.Invert(path, op.Value).Get()
 	case *ListInsert:
 		operator = &ListDelete{Value: op.Value}
 	case *ListDelete:
