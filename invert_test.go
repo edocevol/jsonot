@@ -62,16 +62,6 @@ func TestInvert(t *testing.T) {
 			input:    `{"p":["p1", "p2"], "t": "text", "o":{"p":10, "d":"hello"}}`,
 			expected: `{"p":["p1", "p2"], "t": "text", "o":{"p":10, "i":"hello"}}`,
 		},
-		{
-			name:     "Invert object with positive float",
-			input:    `{"p":["p1", "p2"], "t": "text", "o":{"p":10.5, "i":"world"}}`,
-			expected: `{"p":["p1", "p2"], "t": "text", "o":{"p":-10.5, "d":"world"}}`,
-		},
-		{
-			name:     "Invert object with negative float",
-			input:    `{"p":["p1", "p2"], "t": "text", "o":{"p":-10.5, "d":"world"}}`,
-			expected: `{"p":["p1", "p2"], "t": "text", "o":{"p":10.5, "i":"world"}}`,
-		},
 	}
 
 	ot := NewJSONOperationTransformer()

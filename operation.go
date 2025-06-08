@@ -117,7 +117,13 @@ func (oc *OperationComponent) Invert() mo.Result[*OperationComponent] {
 	case *Noop:
 		operator = &Noop{}
 	case *SubTypeOperator:
-	operator, _ = op.SubTypeFunctions.Invert(path, op.Value).Get()
+		var err error
+		operator, err = op.SubTypeFunctions.Invert(path, op.Value).Get()
+		if err != nil {
+			log.Errorf("invert sub type operator error: %v", err)
+			return mo.Err[*OperationComponent](fmt.Errorf("invert sub type operator error: %w", err))
+		}
+
 	case *ListInsert:
 		operator = &ListDelete{Value: op.Value}
 	case *ListDelete:
@@ -138,6 +144,8 @@ func (oc *OperationComponent) Invert() mo.Result[*OperationComponent] {
 	case *ObjectReplace:
 		operator = &ObjectReplace{NewValue: op.OldValue, OldValue: op.NewValue}
 	}
+
+	log.Debugf("Invert operation component: %s, operator: %v", path, operator)
 	return NewOperationComponent(path, operator)
 }
 

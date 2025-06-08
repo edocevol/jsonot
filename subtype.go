@@ -152,16 +152,14 @@ func (n *NumberAddSubType) OperatorName() string {
 
 // Invert 实现 SubTypeFunctions 接口的 Invert 方法
 func (n *NumberAddSubType) Invert(path Path, subTypeOperand Value) mo.Result[Operator] {
-	if subTypeOperand.IsNumeric() {
+	if !subTypeOperand.IsNumeric() {
 		return mo.Err[Operator](ErrInvalidOperation) //todo: 添加辅助信息
 	}
 
 	val := subTypeOperand.GetNumeric().MustGet()
 	invertVal := ValueFromPrimitive(-val)
 
-	if subTypeOperand.IsInt() {
-		return mo.Ok[Operator](NewSubTypeOperator(NewNumberAdd(), invertVal, n))
-	}
+	log.Debugf("获得的 invert 值是: %s", invertVal.RawMessage())
 
 	return mo.Ok[Operator](NewSubTypeOperator(NewNumberAdd(), invertVal, n))
 }
