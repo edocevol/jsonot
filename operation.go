@@ -2,35 +2,25 @@ package jsonot
 
 import (
 	"container/list"
-	"encoding/json"
 	"fmt"
 
 	"github.com/samber/mo"
 )
 
-// ValueToIndex converts a value to an index.
-func ValueToIndex(val any) mo.Result[int] {
-	switch v := val.(type) {
-	case int:
-		return mo.Ok(v)
-	}
-	return mo.Err[int](fmt.Errorf("%v can not parsed to index", val))
-}
-
 // OperationComponent is a component of an operation.
 type OperationComponent struct {
-	Path     Path
 	Operator Operator
+	Path     Path
 }
 
 // NewOperationComponent creates a new operation component.
 func NewOperationComponent(path Path, operator Operator) mo.Result[*OperationComponent] {
-	op := &OperationComponent{Path: path, Operator: operator}
+	op := &OperationComponent{Path: path.Clone(), Operator: operator.Clone()}
 	return mo.Ok(op)
 }
 
 // Format formats the operation component according to the fmt.Formatter interface.
-func (oc *OperationComponent) Format(st fmt.State, verb rune) {
+func (oc *OperationComponent) Format(st fmt.State, _ rune) {
 	if oc.Path.IsEmpty() {
 		_, _ = fmt.Fprintf(st, "Path:Noop")
 		return
@@ -44,35 +34,36 @@ func (oc *OperationComponent) Format(st fmt.State, verb rune) {
 	_, _ = fmt.Fprintf(st, "Path: %v: %+v", oc.Path, oc.Operator)
 }
 
-// ToNode converts the operation component to a Value.
-func (oc *OperationComponent) ToNode() Value {
+// ToValue converts the operation component to a Value.
+func (oc *OperationComponent) ToValue() Value {
 	obj := make(map[string]interface{})
 	if oc.Path.IsEmpty() {
 		return ValueFromAny(obj)
 	}
-	obj["p"] = json.RawMessage(oc.Path.ToNode().RawMessage())
+	obj["p"] = oc.Path.ToValue().RawMessage()
 	switch op := oc.Operator.(type) {
 	case *ListDelete:
-		obj[string(ActionListDelete)] = op.Value.RawMessage()
+		obj[string(ActionListDelete)] = op.OlvValue.RawMessage()
 	case *ListInsert:
-		obj[string(ActionListInsert)] = op.Value.RawMessage()
+		obj[string(ActionListInsert)] = op.NewValue.RawMessage()
 	case *ListReplace:
 		obj[string(ActionListInsert)] = op.NewValue.RawMessage()
 		obj[string(ActionListDelete)] = op.OldValue.RawMessage()
 	case *ListMove:
 		obj[string(ActionListMove)] = op.NewIndex
 	case *ObjectInsert:
-		obj[string(ActionObjectInsert)] = op.Value.RawMessage()
+		obj[string(ActionObjectInsert)] = op.NewValue.RawMessage()
 	case *ObjectDelete:
-		obj[string(ActionObjectDelete)] = op.Value.RawMessage()
+		obj[string(ActionObjectDelete)] = op.OldValue.RawMessage()
 	case *ObjectReplace:
-		obj[string(ActionListInsert)] = op.NewValue.RawMessage()
-		obj[string(ActionListDelete)] = op.OldValue.RawMessage()
+		obj[string(ActionObjectInsert)] = op.NewValue.RawMessage()
+		obj[string(ActionObjectDelete)] = op.OldValue.RawMessage()
 	case *SubTypeOperator:
-		if op.SubType.TypeName() == NumberAddSubTypeName {
-			obj[op.SubType.TypeName()] = op.Value.RawMessage()
-		} else {
-			obj[string(ActionSubType)] = op.SubType.TypeName()
+		switch st := op.SubType.(type) {
+		case *NumberAdd:
+			obj[string(ActionSubTypeNumberAdd)] = op.Value.RawMessage()
+		default:
+			obj[string(ActionSubType)] = st.TypeName()
 			obj[SubTypeOperand] = op.Value.RawMessage()
 		}
 	}
@@ -117,35 +108,27 @@ func (oc *OperationComponent) Invert() mo.Result[*OperationComponent] {
 	case *Noop:
 		operator = &Noop{}
 	case *SubTypeOperator:
-		var err error
-		operator, err = op.SubTypeFunctions.Invert(path, op.Value).Get()
-		if err != nil {
-			log.Errorf("invert sub type operator error: %v", err)
-			return mo.Err[*OperationComponent](fmt.Errorf("invert sub type operator error: %w", err))
-		}
-
+		operator, _ = op.SubTypeFunctions.Invert(op.SubType, path, op.Value).Get()
 	case *ListInsert:
-		operator = &ListDelete{Value: op.Value}
+		operator = NewListDelete(op.NewValue)
 	case *ListDelete:
-		operator = &ListInsert{Value: op.Value}
+		operator = NewListInsert(op.OlvValue)
 	case *ListReplace:
-		operator = &ListReplace{NewValue: op.OldValue, OldValue: op.NewValue}
+		operator = NewListReplace(op.OldValue, op.NewValue)
 	case *ListMove:
 		oldPath := path.Replace(path.Len()-1, PathElementFromIndex(op.NewIndex))
 		if oldPath.IsPresent() && oldPath.MustGet().Index != 0 {
-			operator = &ListMove{NewIndex: oldPath.MustGet().Index}
+			operator = NewListMove(oldPath.MustGet().Index)
 		} else {
-			return mo.Err[*OperationComponent](fmt.Errorf("bad path"))
+			return mo.Err[*OperationComponent](NewError(BadPath).Append("list move operation path is invalid"))
 		}
 	case *ObjectInsert:
-		operator = &ObjectDelete{Value: op.Value}
+		operator = NewObjectDelete(op.NewValue)
 	case *ObjectDelete:
-		operator = &ObjectInsert{Value: op.Value}
+		operator = NewObjectInsert(op.OldValue)
 	case *ObjectReplace:
-		operator = &ObjectReplace{NewValue: op.OldValue, OldValue: op.NewValue}
+		operator = NewObjectReplace(op.OldValue, op.NewValue)
 	}
-
-	log.Debugf("Invert operation component: %s, operator: %v", path, operator)
 	return NewOperationComponent(path, operator)
 }
 
@@ -158,80 +141,20 @@ func (oc *OperationComponent) Merge(op *OperationComponent) mo.Option[*Operation
 	case *SubTypeOperator:
 		newOp = v1.SubTypeFunctions.Merge(v1.Value, op.Operator)
 	case *ListInsert:
-		switch v2 := op.Operator.(type) {
-		case *ListDelete:
-			if v1.Value.Equals(v2.Value) {
-				newOp = mo.Some[Operator](NewNoop())
-			} else {
-				newOp = mo.None[Operator]()
-			}
-		case *ListReplace:
-			if v1.Value.Equals(v2.OldValue) {
-				newOp = mo.Some[Operator](NewListInsert(v2.NewValue))
-			} else {
-				newOp = mo.None[Operator]()
-			}
-		default:
-			newOp = mo.None[Operator]()
-		}
+		newOp = oc.MergeListInsert(op, v1)
 	case *ListReplace:
-		switch v2 := op.Operator.(type) {
-		case *ListDelete:
-			if v1.NewValue == v2.Value {
-				newOp = mo.Some[Operator](NewListDelete(v1.OldValue))
-			} else {
-				newOp = mo.None[Operator]()
-			}
-		case *ListReplace:
-			if v1.NewValue.Equals(v2.OldValue) {
-				newOp = mo.Some[Operator](NewListReplace(v2.NewValue, v1.OldValue))
-			} else {
-				newOp = mo.None[Operator]()
-			}
-		default:
-			newOp = mo.None[Operator]()
-		}
+		newOp = oc.MergeListReplace(op, v1)
 	case *ObjectInsert:
-		switch v2 := op.Operator.(type) {
-		case *ObjectDelete:
-			if v1.Value.Equals(v2.Value) {
-				newOp = mo.Some[Operator](NewNoop())
-			} else {
-				newOp = mo.None[Operator]()
-			}
-		case *ObjectReplace:
-			if v1.Value.Equals(v2.OldValue) {
-				newOp = mo.Some[Operator](NewObjectInsert(v2.NewValue))
-			} else {
-				newOp = mo.None[Operator]()
-			}
-		default:
-			newOp = mo.None[Operator]()
-		}
+		newOp = oc.MergeObjectInsert(op, v1)
 	case *ObjectDelete:
 		switch v2 := op.Operator.(type) {
 		case *ObjectInsert:
-			newOp = mo.Some[Operator](NewObjectReplace(v2.Value, v1.Value))
+			newOp = mo.Some[Operator](NewObjectReplace(v2.NewValue, v1.OldValue))
 		default:
 			newOp = mo.None[Operator]()
 		}
 	case *ObjectReplace:
-		switch v2 := op.Operator.(type) {
-		case *ObjectDelete:
-			if v1.NewValue.Equals(v2.Value) {
-				newOp = mo.Some[Operator](NewObjectDelete(v1.OldValue))
-			} else {
-				newOp = mo.None[Operator]()
-			}
-		case *ObjectReplace:
-			if v1.NewValue.Equals(v2.OldValue) {
-				newOp = mo.Some[Operator](NewObjectReplace(v2.NewValue, v1.OldValue))
-			} else {
-				newOp = mo.None[Operator]()
-			}
-		default:
-			newOp = mo.None[Operator]()
-		}
+		newOp = oc.MergeObjectReplace(op, v1)
 	}
 
 	if newOp.IsAbsent() {
@@ -240,6 +163,96 @@ func (oc *OperationComponent) Merge(op *OperationComponent) mo.Option[*Operation
 
 	newOc := &OperationComponent{Path: oc.Path, Operator: newOp.MustGet()}
 	return mo.Some(newOc)
+}
+
+// MergeListInsert merges a ListInsert operation with another operation.
+func (oc *OperationComponent) MergeListInsert(op *OperationComponent, v1 *ListInsert) mo.Option[Operator] {
+	var newOp mo.Option[Operator]
+	switch v2 := op.Operator.(type) {
+	case *ListDelete:
+		if v1.NewValue.Equals(v2.OlvValue) {
+			newOp = mo.Some[Operator](NewNoop())
+		} else {
+			newOp = mo.None[Operator]()
+		}
+	case *ListReplace:
+		if v1.NewValue.Equals(v2.OldValue) {
+			newOp = mo.Some[Operator](NewListInsert(v2.NewValue))
+		} else {
+			newOp = mo.None[Operator]()
+		}
+	default:
+		newOp = mo.None[Operator]()
+	}
+
+	return newOp
+}
+
+// MergeListReplace merges a ListReplace operation with another operation.
+func (oc *OperationComponent) MergeListReplace(op *OperationComponent, v1 *ListReplace) mo.Option[Operator] {
+	var newOp mo.Option[Operator]
+	switch v2 := op.Operator.(type) {
+	case *ListDelete:
+		if v1.NewValue == v2.OlvValue {
+			newOp = mo.Some[Operator](NewListDelete(v1.OldValue))
+		} else {
+			newOp = mo.None[Operator]()
+		}
+	case *ListReplace:
+		if v1.NewValue.Equals(v2.OldValue) {
+			newOp = mo.Some[Operator](NewListReplace(v2.NewValue, v1.OldValue))
+		} else {
+			newOp = mo.None[Operator]()
+		}
+	default:
+		newOp = mo.None[Operator]()
+	}
+	return newOp
+}
+
+// MergeObjectInsert merges an ObjectInsert operation with another operation.
+func (oc *OperationComponent) MergeObjectInsert(op *OperationComponent, v1 *ObjectInsert) mo.Option[Operator] {
+	var newOp mo.Option[Operator]
+	switch v2 := op.Operator.(type) {
+	case *ObjectDelete:
+		if v1.NewValue.Equals(v2.OldValue) {
+			newOp = mo.Some[Operator](NewNoop())
+		} else {
+			newOp = mo.None[Operator]()
+		}
+	case *ObjectReplace:
+		if v1.NewValue.Equals(v2.OldValue) {
+			newOp = mo.Some[Operator](NewObjectInsert(v2.NewValue))
+		} else {
+			newOp = mo.None[Operator]()
+		}
+	default:
+		newOp = mo.None[Operator]()
+	}
+	return newOp
+}
+
+// MergeObjectReplace merges an ObjectReplace operation with another operation.
+func (oc *OperationComponent) MergeObjectReplace(op *OperationComponent, v1 *ObjectReplace) mo.Option[Operator] {
+	var newOp mo.Option[Operator]
+	switch v2 := op.Operator.(type) {
+	case *ObjectDelete:
+		if v1.NewValue.Equals(v2.OldValue) {
+			newOp = mo.Some[Operator](NewObjectDelete(v1.OldValue))
+		} else {
+			newOp = mo.None[Operator]()
+		}
+	case *ObjectReplace:
+		if v1.NewValue.Equals(v2.OldValue) {
+			newOp = mo.Some[Operator](NewObjectReplace(v2.NewValue, v1.OldValue))
+		} else {
+			newOp = mo.None[Operator]()
+		}
+	default:
+		newOp = mo.None[Operator]()
+	}
+
+	return newOp
 }
 
 // OperatePathLen returns the length of the path of the operation component.
@@ -256,7 +269,7 @@ func (oc *OperationComponent) OperatePathLen() int {
 // Validation validates the operation component.
 func (oc *OperationComponent) Validation() error {
 	if oc.Path.IsEmpty() {
-		return fmt.Errorf("path is empty")
+		return NewError(BadPath).Append("component path is empty")
 	}
 
 	return oc.Operator.Validates()
@@ -295,8 +308,8 @@ func (o *Operation) Format(st fmt.State, verb rune) {
 	}
 }
 
-// ToNode converts the operation to a Value.
-func (o *Operation) ToNode() Value {
+// ToValue converts the operation to a Value.
+func (o *Operation) ToValue() Value {
 	var components []Value
 	if o.Operations == nil || o.Operations.Len() == 0 {
 		return ValueFromArray(components)
@@ -305,7 +318,7 @@ func (o *Operation) ToNode() Value {
 	for e := o.Operations.Front(); e != nil; e = e.Next() {
 		op, _ := e.Value.(*OperationComponent)
 		if op != nil {
-			components = append(components, op.ToNode())
+			components = append(components, op.ToValue())
 		}
 	}
 
@@ -390,9 +403,9 @@ func (o *Operation) Array() []*OperationComponent {
 
 // ListOperationBuilder is a builder for list operations.
 type ListOperationBuilder struct {
-	path   Path
 	insert mo.Option[Value]
 	delete mo.Option[Value]
+	path   Path
 	moveTo mo.Option[int]
 }
 
@@ -414,9 +427,9 @@ func (b *ListOperationBuilder) Delete(val Value) *ListOperationBuilder {
 }
 
 // Replace sets the replacement values.
-func (b *ListOperationBuilder) Replace(old, new Value) *ListOperationBuilder {
-	b.insert = mo.Some(new)
-	b.delete = mo.Some(old)
+func (b *ListOperationBuilder) Replace(oldVal, newVal Value) *ListOperationBuilder {
+	b.insert = mo.Some(newVal)
+	b.delete = mo.Some(oldVal)
 	return b
 }
 
@@ -438,11 +451,11 @@ func (b *ListOperationBuilder) Build() mo.Result[*OperationComponent] {
 				NewValue: b.insert.MustGet(), OldValue: b.delete.MustGet(),
 			})
 		}
-		return NewOperationComponent(b.path, &ListDelete{Value: b.delete.MustGet()})
+		return NewOperationComponent(b.path, &ListDelete{OlvValue: b.delete.MustGet()})
 	}
 
 	if b.insert.IsPresent() {
-		return NewOperationComponent(b.path, &ListInsert{Value: b.insert.MustGet()})
+		return NewOperationComponent(b.path, &ListInsert{NewValue: b.insert.MustGet()})
 	}
 
 	return NewOperationComponent(b.path, &Noop{})
@@ -450,10 +463,10 @@ func (b *ListOperationBuilder) Build() mo.Result[*OperationComponent] {
 
 // ObjectOperationBuilder is a builder for object operations.
 type ObjectOperationBuilder struct {
-	path    Path
 	insert  mo.Option[Value]
 	delete  mo.Option[Value]
 	replace mo.Option[Value]
+	path    Path
 }
 
 // NewObjectOperationBuilder creates a new object operation builder.
@@ -474,9 +487,9 @@ func (b *ObjectOperationBuilder) Delete(val Value) *ObjectOperationBuilder {
 }
 
 // Replace sets the replacement values.
-func (b *ObjectOperationBuilder) Replace(old, new Value) *ObjectOperationBuilder {
-	b.replace = mo.Some(new)
-	b.delete = mo.Some(old)
+func (b *ObjectOperationBuilder) Replace(oldVal, newVal Value) *ObjectOperationBuilder {
+	b.replace = mo.Some(newVal)
+	b.delete = mo.Some(oldVal)
 	return b
 }
 
@@ -488,11 +501,11 @@ func (b *ObjectOperationBuilder) Build() mo.Result[*OperationComponent] {
 				NewValue: b.insert.MustGet(), OldValue: b.delete.MustGet(),
 			})
 		}
-		return NewOperationComponent(b.path, &ObjectDelete{Value: b.delete.MustGet()})
+		return NewOperationComponent(b.path, &ObjectDelete{OldValue: b.delete.MustGet()})
 	}
 
 	if b.insert.IsPresent() {
-		return NewOperationComponent(b.path, &ObjectInsert{Value: b.insert.MustGet()})
+		return NewOperationComponent(b.path, &ObjectInsert{NewValue: b.insert.MustGet()})
 	}
 
 	return NewOperationComponent(b.path, &Noop{})
@@ -500,10 +513,10 @@ func (b *ObjectOperationBuilder) Build() mo.Result[*OperationComponent] {
 
 // NumberAddOperationBuilder is a builder for number add operations.
 type NumberAddOperationBuilder struct {
+	subTypeFunctions SubTypeFunctions
 	path             Path
 	numberInt        mo.Option[int64]
 	numberFlt        mo.Option[float64]
-	subTypeFunctions SubTypeFunctions
 }
 
 // NewNumberAddOperationBuilder creates a new number add operation builder.
@@ -525,13 +538,6 @@ func (b *NumberAddOperationBuilder) AddFloat(val float64) *NumberAddOperationBui
 
 // Build builds the operation component.
 func (b *NumberAddOperationBuilder) Build() mo.Result[*OperationComponent] {
-	if b.numberInt.IsPresent() && b.numberFlt.IsPresent() {
-		return mo.Err[*OperationComponent](fmt.Errorf("number add operation can not have both int and float values"))
-	}
-	if !b.numberInt.IsPresent() && !b.numberFlt.IsPresent() {
-		return mo.Err[*OperationComponent](fmt.Errorf("number add operation must have either int or float value"))
-	}
-
 	if b.numberInt.IsPresent() {
 		return NewOperationComponent(b.path,
 			NewSubTypeOperator(NewNumberAdd(), ValueFromPrimitive(b.numberInt.MustGet()), b.subTypeFunctions))
@@ -541,16 +547,16 @@ func (b *NumberAddOperationBuilder) Build() mo.Result[*OperationComponent] {
 			NewSubTypeOperator(NewNumberAdd(), ValueFromPrimitive(b.numberFlt.MustGet()), b.subTypeFunctions))
 	}
 
-	return mo.Err[*OperationComponent](fmt.Errorf("number add operation must have either int or float value"))
+	return mo.Err[*OperationComponent](NewError(InvalidOperation).Append("na operand value is required"))
 }
 
 // TextOperationBuilder is a builder for text operations.
 type TextOperationBuilder struct {
-	path            Path
-	offset          int
+	subTypeFunction SubTypeFunctions
 	insertVal       mo.Option[string]
 	deleteVal       mo.Option[string]
-	subTypeFunction SubTypeFunctions
+	path            Path
+	offset          int
 }
 
 // NewTextOperationBuilder creates a new text operation builder.
@@ -580,15 +586,15 @@ func (b *TextOperationBuilder) DeleteStr(offset int, val mo.Option[string]) *Tex
 // Build builds the operation component for text operations.
 func (b *TextOperationBuilder) Build() mo.Result[*OperationComponent] {
 	if (b.insertVal.IsAbsent() && b.deleteVal.IsAbsent()) || (b.insertVal.IsPresent() && b.deleteVal.IsPresent()) {
-		return mo.Err[*OperationComponent](fmt.Errorf("text operation must either insert or delete"))
+		return mo.Err[*OperationComponent](NewError(InvalidOperation).Append("text operand value invalid"))
 	}
 
 	m := map[string]any{}
-	m["p"] = b.offset
+	m[TextOperandOffsetKey] = b.offset
 	if b.insertVal.IsPresent() {
-		m["i"] = b.insertVal.MustGet()
+		m[TextOperandInsertKey] = b.insertVal.MustGet()
 	} else {
-		m["d"] = b.deleteVal.MustGet()
+		m[TextOperandDeleteKey] = b.deleteVal.MustGet()
 	}
 
 	return NewOperationComponent(b.path, NewSubTypeOperator(NewText(), ValueFromAny(m), b.subTypeFunction))
@@ -596,10 +602,10 @@ func (b *TextOperationBuilder) Build() mo.Result[*OperationComponent] {
 
 // SubTypeOperationBuilder is a builder for subtype operations.
 type SubTypeOperationBuilder struct {
-	path            Path
 	subType         SubType
 	subTypeOperand  Value
 	subTypeFunction SubTypeFunctions
+	path            Path
 }
 
 // NewSubTypeOperationBuilder creates a new subtype operation builder.
@@ -626,10 +632,10 @@ func (b *SubTypeOperationBuilder) SubTypeFunctions(f SubTypeFunctions) *SubTypeO
 // Build builds the operation component for subtype operations.
 func (b *SubTypeOperationBuilder) Build() mo.Result[*OperationComponent] {
 	if b.subTypeOperand == nil {
-		return mo.Err[*OperationComponent](fmt.Errorf("sub type operator is required"))
+		return mo.Err[*OperationComponent](NewError(InvalidOperation).Append("subtype operand value is required"))
 	}
 	if b.subTypeFunction == nil {
-		return mo.Err[*OperationComponent](fmt.Errorf("sub type functions is required"))
+		return mo.Err[*OperationComponent](NewError(InvalidOperation).Append("subtype function is required"))
 	}
 	return NewOperationComponent(b.path, NewSubTypeOperator(b.subType, b.subTypeOperand, b.subTypeFunction))
 }
@@ -667,14 +673,15 @@ func (f *OperationFactory) TextOperationBuilder(path Path) *TextOperationBuilder
 
 // OperationComponentFromValue creates an operation component from a value.
 func (f *OperationFactory) OperationComponentFromValue(val Value) mo.Result[*OperationComponent] {
-	log.Debugf("OperationComponentFromValue: %s\n", val.RawMessage())
-	p := val.GetKey("p")
+	p := val.GetKey(TextOperandOffsetKey)
 	if p.IsAbsent() {
-		return mo.Err[*OperationComponent](fmt.Errorf("path is missing in value %v", val))
+		return mo.Err[*OperationComponent](
+			NewError(InvalidOperation).Append("offset is required for text operation"),
+		)
 	}
 
 	var path Path
-	path.FromNode(p.MustGet())
+	path.FromValue(p.MustGet())
 	operator := f.OperatorFromValue(val)
 	if operator.IsError() {
 		return mo.Err[*OperationComponent](operator.Error())
@@ -689,16 +696,16 @@ func (f *OperationFactory) OperatorFromValue(val Value) mo.Result[Operator] {
 		return f.MapToOperator(val)
 	}
 
-	return mo.Err[Operator](fmt.Errorf("value %v is not a valid operator", val))
+	return mo.Err[Operator](NewError(InvalidOperation).Append("operator value must be an object"))
 }
 
 // MapToOperator converts a map to an operator.
 func (f *OperationFactory) MapToOperator(obj Value) mo.Result[Operator] {
 	// 判断是否是子类型操作
-	if obj.HasKey("na") {
+	if obj.HasKey(NumberAddSubTypeName) {
 		return f.MapToOperatorForNumberAdd(obj)
 	}
-	if obj.HasKey("t") {
+	if obj.HasKey(string(ActionSubType)) {
 		return f.MapToOperatorForSubType(obj)
 	}
 	if obj.HasKey(string(ActionListMove)) { // List Move
@@ -735,42 +742,35 @@ func (f *OperationFactory) MapToOperator(obj Value) mo.Result[Operator] {
 // ValidateOperationObjectSize 检查操作对象的大小是否超过限制
 func (f *OperationFactory) ValidateOperationObjectSize(val Value, expectSize int) mo.Result[bool] {
 	valSize := val.Size()
-	if valSize != expectSize {
-		return mo.Err[bool](fmt.Errorf("json object size bigger than operator required"))
+	if valSize < expectSize {
+		return mo.Err[bool](NewError(InvalidParameter).Append("json object size less than operator required"))
 	}
 	return mo.Ok[bool](true)
 }
 
 // MapToOperatorForSubType 自定义子类型操作
 func (f *OperationFactory) MapToOperatorForSubType(obj Value) mo.Result[Operator] {
-	subType := obj.GetStringKey("t")
+	subTypeKey := obj.GetStringKey(string(ActionSubType))
 	result := f.ValidateOperationObjectSize(obj, 3)
 	if result.IsError() {
 		return mo.Err[Operator](result.Error())
 	}
 
-	op := obj.GetKey("o")
-	if op.IsAbsent() {
-		return mo.Err[Operator](fmt.Errorf("value %v is not a valid text operation", obj))
+	opKey := obj.GetKey(SubTypeOperand)
+	op := opKey.OrElse(ValueFromAny(map[string]any{}))
+
+	subType := NewCustom(subTypeKey.MustGet())
+	subTypeFunc := f.subTypeHolder.Get(SubTypeAction(subTypeKey.MustGet()))
+	if subTypeFunc.IsAbsent() {
+		return mo.Err[Operator](NewError(InvalidOperation).Append("unsupported sub type: %s", subTypeKey.OrEmpty()))
 	}
 
-	switch subType.MustGet() {
-	case "na":
-		subTypeFunctions := f.subTypeHolder.Get(ActionSubTypeNumberAdd)
-		return mo.Ok[Operator](NewSubTypeOperator(NewNumberAdd(), op.MustGet(), subTypeFunctions.MustGet()))
-	case "text":
-		subTypeFunctions := f.subTypeHolder.Get(ActionSubTypeText)
-		return mo.Ok[Operator](NewSubTypeOperator(NewText(), op.MustGet(), subTypeFunctions.MustGet()))
-	case "custom":
-		return mo.Err[Operator](fmt.Errorf("value %v is not a valid custom operation", subType))
-	default:
-		return mo.Err[Operator](fmt.Errorf("sub type %s not found", subType.MustGet()))
-	}
+	return mo.Ok[Operator](NewSubTypeOperator(subType, op, subTypeFunc.MustGet()))
 }
 
 // MapToOperatorForNumberAdd converts a map to a number add operator.
 func (f *OperationFactory) MapToOperatorForNumberAdd(obj Value) mo.Result[Operator] {
-	na := obj.GetKey("na") // 调用前已经判断存在字段了
+	na := obj.GetKey(NumberAddSubTypeName) // 调用前已经判断存在字段了
 	result := f.ValidateOperationObjectSize(obj, 2)
 	if result.IsError() {
 		return mo.Err[Operator](result.Error())
@@ -778,7 +778,7 @@ func (f *OperationFactory) MapToOperatorForNumberAdd(obj Value) mo.Result[Operat
 
 	val := na.MustGet().GetNumeric()
 	if val.IsError() {
-		return mo.Err[Operator](fmt.Errorf("missing or invalid value for number add operation"))
+		return mo.Err[Operator](NewError(InvalidOperation).Append("value for na operation invalid"))
 	}
 
 	return mo.Ok[Operator](NewSubTypeOperator(
@@ -795,7 +795,7 @@ func (f *OperationFactory) MapToOperatorForListMove(obj Value) mo.Result[Operato
 
 	index := obj.GetIntKey(string(ActionListMove))
 	if index.IsAbsent() {
-		return mo.Err[Operator](fmt.Errorf("missing or invalid index for list move operation"))
+		return mo.Err[Operator](NewError(InvalidOperation).Append("value for list move is required"))
 	}
 
 	return mo.Ok[Operator](NewListMove(index.MustGet()))
@@ -804,6 +804,10 @@ func (f *OperationFactory) MapToOperatorForListMove(obj Value) mo.Result[Operato
 // MapToOperatorForListInsert converts a map to a ListInsert operator.
 func (f *OperationFactory) MapToOperatorForListInsert(obj Value) mo.Result[Operator] {
 	li := obj.GetKey(string(ActionListInsert))
+	if li.IsAbsent() {
+		return mo.Err[Operator](NewError(InvalidOperation).Append("value for list insert is required"))
+	}
+
 	if obj.HasKey(string(ActionListDelete)) {
 		result := f.ValidateOperationObjectSize(obj, 3)
 		if result.IsError() {
@@ -829,6 +833,9 @@ func (f *OperationFactory) MapToOperatorForListDelete(obj Value) mo.Result[Opera
 	}
 
 	ld := obj.GetKey(string(ActionListDelete))
+	if ld.IsAbsent() {
+		return mo.Err[Operator](NewError(InvalidOperation).Append("value for list delete is required"))
+	}
 	return mo.Ok[Operator](NewListDelete(ld.MustGet()))
 }
 
@@ -842,7 +849,7 @@ func (f *OperationFactory) MapToOperatorForListReplace(obj Value) mo.Result[Oper
 	li := obj.GetKey(string(ActionListInsert))
 	ld := obj.GetKey(string(ActionListDelete))
 	if li.IsAbsent() || ld.IsAbsent() {
-		return mo.Err[Operator](fmt.Errorf("missing or invalid values for list replace operation"))
+		return mo.Err[Operator](NewError(InvalidOperation).Append("value for list replace is required"))
 	}
 
 	return mo.Ok[Operator](NewListReplace(li.MustGet(), ld.MustGet()))
@@ -871,7 +878,7 @@ func (f *OperationFactory) MapToOperatorForObjectInsert(obj Value) mo.Result[Ope
 // MapToOperatorForObjectDelete converts a map to an ObjectDelete operator.
 func (f *OperationFactory) MapToOperatorForObjectDelete(obj Value) mo.Result[Operator] {
 	if !obj.HasKey(string(ActionObjectDelete)) {
-		return mo.Err[Operator](fmt.Errorf("value %v is not a valid object delete operation", obj))
+		return mo.Err[Operator](NewError(InvalidOperation).Append("value for object delete is required"))
 	}
 
 	result := f.ValidateOperationObjectSize(obj, 2)
@@ -893,7 +900,7 @@ func (f *OperationFactory) MapToOperatorForObjectReplace(obj Value) mo.Result[Op
 	oi := obj.GetKey(string(ActionObjectInsert))
 	od := obj.GetKey(string(ActionObjectDelete))
 	if oi.IsAbsent() || od.IsAbsent() {
-		return mo.Err[Operator](fmt.Errorf("missing or invalid values for object replace operation"))
+		return mo.Err[Operator](NewError(InvalidOperation).Append("value for object replace is required"))
 	}
 
 	return mo.Ok[Operator](NewObjectReplace(oi.MustGet(), od.MustGet()))

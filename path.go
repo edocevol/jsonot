@@ -61,7 +61,7 @@ func (p *Path) Format(st fmt.State, verb rune) {
 	var elements []string
 	for _, elem := range p.Paths {
 		if elem.Key != "" {
-			elements = append(elements, fmt.Sprintf("\"%s\"", elem.Key))
+			elements = append(elements, fmt.Sprintf("%q", elem.Key))
 		} else {
 			elements = append(elements, strconv.Itoa(elem.Index))
 		}
@@ -69,8 +69,8 @@ func (p *Path) Format(st fmt.State, verb rune) {
 	_, _ = fmt.Fprintf(st, "[%s]", strings.Join(elements, ", "))
 }
 
-// ToNode convert the Path to a Value
-func (p *Path) ToNode() Value {
+// ToValue convert the Path to a Value
+func (p *Path) ToValue() Value {
 	var paths []any
 	for _, pe := range p.Paths {
 		if pe.Key != "" {
@@ -83,8 +83,8 @@ func (p *Path) ToNode() Value {
 	return ValueFromAny(paths)
 }
 
-// FromNode create a new Path from a Value
-func (p *Path) FromNode(path Value) {
+// FromValue create a new Path from a Value
+func (p *Path) FromValue(path Value) {
 	var paths []PathElement
 	pathValue := path.GetArray()
 	for _, v := range pathValue.MustGet() {
@@ -231,7 +231,7 @@ func (p *Path) DecreaseIndex(index int) bool {
 }
 
 // SplitAt split the path at index
-func (p *Path) SplitAt(mid int) (Path, Path) {
+func (p *Path) SplitAt(mid int) (left, right Path) {
 	return Path{Paths: p.Paths[:mid]}, Path{Paths: p.Paths[mid:]}
 }
 
@@ -299,11 +299,11 @@ func (p *Path) UnmarshalJSON(data []byte) error {
 	}
 
 	for _, pe := range paths {
-		switch pe.(type) {
+		switch pe := pe.(type) {
 		case string:
-			p.Paths = append(p.Paths, PathElement{Key: pe.(string)})
+			p.Paths = append(p.Paths, PathElement{Key: pe})
 		case float64:
-			p.Paths = append(p.Paths, PathElement{Key: strconv.Itoa(int(pe.(float64)))})
+			p.Paths = append(p.Paths, PathElement{Key: strconv.Itoa(int(pe))})
 		}
 	}
 	return nil

@@ -7,25 +7,14 @@ import (
 	"github.com/samber/mo"
 )
 
-// OperationTransformer 是一个接口，用于转换 JSON 操作
-type OperationTransformer interface {
-	// Apply 将操作应用到给定的 JSON 节点上
-	Apply(ctx context.Context, value Value, operation *Operation) mo.Result[Value]
-	// Transform 将操作转换为另一种形式
-	Transform(
-		ctx context.Context, baseOperations, newOperations *Operation,
-	) (left *Operation, right *Operation, err error)
-	// Compose 将多个操作组合成一个操作
-	Compose(ctx context.Context, operations *Operation) mo.Result[*Operation]
-	// Invert 将操作反转
-	Invert(ctx context.Context, operations *Operation) mo.Result[*Operation]
+// UseSonic 用于切换到 Sonic 实现
+func UseSonic() {
+	defaultValueFactory = NewSonicValueFactory()
 }
 
-// JSONOperationTransformer 是一个实现了 OperationTransformer 接口的结构体
-type JSONOperationTransformer struct {
-	functions        SubTypeFunctionsHolder
-	transformer      *Transformer
-	operationFaction *OperationFactory
+// UseAJSON 切换到 AJSON 实现
+func UseAJSON() {
+	defaultValueFactory = NewAJSONValueFactory()
 }
 
 // NewJSONOperationTransformer 创建一个新的 JSONOperationTransformer
@@ -33,11 +22,31 @@ func NewJSONOperationTransformer() *JSONOperationTransformer {
 	ot := new(JSONOperationTransformer)
 	ot.transformer = NewTransformer()
 	ot.functions = NewSubTypeFunctionsHolder()
-	ot.functions.Register(ActionSubTypeNumberAdd, NewNumberAddSubType())
-	ot.functions.Register(ActionSubTypeText, NewTextSubType())
 	ot.operationFaction = NewOperationFactory(ot.functions)
-
 	return ot
+}
+
+// OperationTransformer 是一个接口，用于转换 JSON 操作
+type OperationTransformer interface {
+	// OperationFromValueArray 创建一个操作
+	OperationFromValueArray(values []Value) mo.Result[*Operation]
+	// OperationComponentsFromValue 创建一个操作组件
+	OperationComponentsFromValue(node Value) mo.Result[[]*OperationComponent]
+	// Apply 将操作应用到给定的 JSON 节点上
+	Apply(ctx context.Context, value Value, operation *Operation) mo.Result[Value]
+	// Applies 将多个操作应用到给定的 JSON 节点上
+	Applies(ctx context.Context, value Value, operations []*Operation) mo.Result[Value]
+	// Transform 对操作进行转换
+	Transform(ctx context.Context, left, right *Operation) (leftN, rightN *Operation, err error)
+}
+
+var _ OperationTransformer = (*JSONOperationTransformer)(nil)
+
+// JSONOperationTransformer 是一个实现了 OperationTransformer 接口的结构体
+type JSONOperationTransformer struct {
+	functions        SubTypeFunctionsHolder
+	transformer      *Transformer
+	operationFaction *OperationFactory
 }
 
 // RegisterSubType 注册子类型函数
@@ -55,8 +64,8 @@ func (ot *JSONOperationTransformer) OperationFactory() *OperationFactory {
 	return ot.operationFaction
 }
 
-// OperationComponentsFromNode 创建一个操作组件
-func (ot *JSONOperationTransformer) OperationComponentsFromNode(
+// OperationComponentsFromValue 创建一个操作组件
+func (ot *JSONOperationTransformer) OperationComponentsFromValue(
 	node Value,
 ) mo.Result[[]*OperationComponent] {
 	if node.IsArray() {
@@ -66,7 +75,7 @@ func (ot *JSONOperationTransformer) OperationComponentsFromNode(
 		}
 		var result []*OperationComponent
 		for _, item := range arr.MustGet() {
-			v := ot.OperationComponentsFromNode(item)
+			v := ot.OperationComponentsFromValue(item)
 			if v.IsOk() {
 				result = append(result, v.MustGet()...)
 			} else {
@@ -95,9 +104,25 @@ func (ot *JSONOperationTransformer) OperationComponentFromValue(value Value) mo.
 	return ot.operationFaction.OperationComponentFromValue(value)
 }
 
+// OperationFromValueArray 创建一个操作
+func (ot *JSONOperationTransformer) OperationFromValueArray(values []Value) mo.Result[*Operation] {
+	var components []*OperationComponent
+	for k := range values {
+		v := ot.OperationComponentsFromValue(values[k])
+		if v.IsOk() {
+			components = append(components, v.MustGet()...)
+		} else {
+			return mo.Err[*Operation](v.Error())
+		}
+	}
+
+	operation := NewOperation(components)
+	return mo.Ok(operation)
+}
+
 // Apply 将操作应用到给定的 JSON 节点上
 func (ot *JSONOperationTransformer) Apply(
-	ctx context.Context, value Value, operations *Operation,
+	_ context.Context, value Value, operations *Operation,
 ) mo.Result[Value] {
 	if operations.Len() == 0 {
 		return mo.Ok(value)
@@ -110,9 +135,10 @@ func (ot *JSONOperationTransformer) Apply(
 		}
 	}
 
+	value.PackAny()
 	var err error
-	for _, op := range components {
-		err = ApplyToValue(value, op.Path, op.Operator)
+	for k := range components {
+		err = ApplyToValue(value, components[k].Path, components[k].Operator)
 		if err != nil {
 			return mo.Err[Value](err)
 		}
@@ -121,46 +147,50 @@ func (ot *JSONOperationTransformer) Apply(
 	return mo.Ok(value)
 }
 
+// Applies 将多个操作应用到给定的 JSON 节点上
+func (ot *JSONOperationTransformer) Applies(
+	ctx context.Context, value Value, operations []*Operation,
+) mo.Result[Value] {
+	if len(operations) == 0 {
+		return mo.Ok(value)
+	}
+
+	for _, op := range operations {
+		if op.Len() == 0 {
+			continue
+		}
+
+		result := ot.Apply(ctx, value, op)
+		if result.IsError() {
+			return result
+		}
+		value = result.MustGet()
+	}
+
+	return mo.Ok(value)
+}
+
 // Transform 将操作转换为另一种形式
 func (ot *JSONOperationTransformer) Transform(
-	ctx context.Context, newOperation, baseOperation *Operation,
-) (*Operation, *Operation, error) {
-	left, right, err := ot.transformer.Transform(newOperation, baseOperation)
+	_ context.Context, left, right *Operation,
+) (newLeft, newRight *Operation, err error) {
+	newLeftResult, newRightResult, err := ot.transformer.Transform(left, right)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if left.IsOk() && right.IsOk() {
-		return left.MustGet(), right.MustGet(), nil
+	if newLeftResult.IsOk() && newRightResult.IsOk() {
+		return newLeftResult.MustGet(), newRightResult.MustGet(), nil
 	}
 
-	if left.IsOk() {
-		return left.MustGet(), NewOperation([]*OperationComponent{}), nil
+	if newLeftResult.IsOk() {
+		return newLeftResult.MustGet(), NewOperation([]*OperationComponent{}), nil
 	}
 
-	if right.IsOk() {
-		return NewOperation([]*OperationComponent{}), right.MustGet(), nil
+	if newRightResult.IsOk() {
+		return NewOperation([]*OperationComponent{}), newRightResult.MustGet(), nil
 	}
 
-	return nil, nil, fmt.Errorf("transform failed: %w", left.Error())
-}
-
-// Invert 将操作反转
-func (ot *JSONOperationTransformer) Invert(
-	ctx context.Context, operations *Operation,
-) mo.Result[*Operation] {
-	if operations.Len() == 0 {
-		return mo.Ok(NewOperation([]*OperationComponent{}))
-	}
-
-	invertedComponents := make([]*OperationComponent, 0, operations.Len())
-	for _, op := range operations.Array() {
-		inverted := op.Invert()
-		if inverted.IsError() {
-			return mo.Err[*Operation](inverted.Error())
-		}
-		invertedComponents = append(invertedComponents, inverted.MustGet())
-	}
-
-	return mo.Ok(NewOperation(invertedComponents))
+	err = fmt.Errorf("transform failed left: %w, right: %w", newLeftResult.Error(), newRightResult.Error())
+	return nil, nil, err
 }

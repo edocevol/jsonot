@@ -8,19 +8,19 @@ import (
 )
 
 // RouteGetOnValue 从值中获取路由
-func RouteGetOnValue(val *ValueBrian, paths Path) (mo.Option[*ValueBrian], error) {
+func RouteGetOnValue(val *ValueBrian, paths Path, valType ValueType) (mo.Option[*ValueBrian], error) {
 	switch val.Value.Type() {
 	case Array:
-		return RouteGetOnArray(val, paths)
+		return RouteGetOnArray(val, paths, valType)
 	case Object:
-		return RouteGetOnObject(val, paths)
+		return RouteGetOnObject(val, paths, valType)
 	default:
 		return mo.None[*ValueBrian](), nil
 	}
 }
 
 // RouteGetOnArray 从数组上获取路径
-func RouteGetOnArray(val *ValueBrian, paths Path) (mo.Option[*ValueBrian], error) {
+func RouteGetOnArray(val *ValueBrian, paths Path, valType ValueType) (mo.Option[*ValueBrian], error) {
 	arr := val.Value.GetArray()
 	if arr.IsError() {
 		return mo.None[*ValueBrian](), arr.Error()
@@ -28,30 +28,34 @@ func RouteGetOnArray(val *ValueBrian, paths Path) (mo.Option[*ValueBrian], error
 
 	index := paths.FirstIndexPath()
 	if index.IsAbsent() {
-		return mo.None[*ValueBrian](), ErrBadPath
+		return mo.None[*ValueBrian](), NewError(BadPath)
 	}
 
 	if index.MustGet() < 0 {
-		return mo.None[*ValueBrian](), ErrBadPath
+		return mo.None[*ValueBrian](), NewError(BadPath).Append("index must be non-negative")
 	}
 
+	brainNode := &ValueBrian{Parent: val, IndexInParent: index.MustGet()}
 	if index.MustGet() >= len(arr.MustGet()) {
-		return mo.None[*ValueBrian](), nil
+		brainNode.Value = NewValue(valType)
+		return mo.Some(brainNode), nil
 	}
 
 	node := arr.MustGet()[index.MustGet()]
 	if node.IsNull() {
-		return mo.None[*ValueBrian](), nil
+		brainNode.Value = NewValue(valType)
+		return mo.Some(brainNode), nil
 	}
 
+	brainNode.Value = node
+
 	node.PackAny()
-	brainNode := &ValueBrian{Value: node, Parent: val, IndexInParent: index.MustGet()}
 	nextLevel := paths.NextLevel()
 	if nextLevel.IsEmpty() {
 		return mo.Some(brainNode), nil
 	}
 
-	nextNode, err := RouteGetOnValue(brainNode, nextLevel)
+	nextNode, err := RouteGetOnValue(brainNode, nextLevel, valType)
 	if err != nil {
 		return mo.None[*ValueBrian](), err
 	}
@@ -60,26 +64,26 @@ func RouteGetOnArray(val *ValueBrian, paths Path) (mo.Option[*ValueBrian], error
 }
 
 // RouteGetOnObject 从对象上获取路径
-func RouteGetOnObject(obj *ValueBrian, paths Path) (mo.Option[*ValueBrian], error) {
+func RouteGetOnObject(obj *ValueBrian, paths Path, valType ValueType) (mo.Option[*ValueBrian], error) {
 	key := paths.FirstKeyPath()
 	if key.IsAbsent() {
-		return mo.None[*ValueBrian](), ErrBadPath
+		return mo.None[*ValueBrian](), NewError(BadPath)
 	}
 
+	brainNode := &ValueBrian{Parent: obj, KeyInParent: key.MustGet()}
 	node := obj.Value.GetKey(key.MustGet())
 	if node.IsAbsent() {
-		return mo.None[*ValueBrian](), nil
+		brainNode.Value = NewValue(valType)
+		return mo.Some(brainNode), nil
 	}
 
-	nextObj := node.MustGet()
-	nextObj.PackAny()
-	brainNode := &ValueBrian{Value: nextObj, Parent: obj, KeyInParent: key.MustGet()}
+	brainNode.Value = node.MustGet()
 	nextLevel := paths.NextLevel()
 	if nextLevel.IsEmpty() {
 		return mo.Some(brainNode), nil
 	}
 
-	nextNode, err := RouteGetOnValue(brainNode, nextLevel)
+	nextNode, err := RouteGetOnValue(brainNode, nextLevel, valType)
 	if err != nil {
 		return mo.None[*ValueBrian](), err
 	}
@@ -96,7 +100,7 @@ func RouteSetOnValue(val *ValueBrian, paths Path, newValue *ValueBrian) error {
 	case Object:
 		return RouteSetOnObject(val, paths, newValue)
 	default:
-		return fmt.Errorf("%w: unexpected to set value by path %s", ErrBadPath, paths.String())
+		return NewError(BadPath).Append("raw value for update should be array or object")
 	}
 }
 
@@ -104,7 +108,7 @@ func RouteSetOnValue(val *ValueBrian, paths Path, newValue *ValueBrian) error {
 func RouteSetOnArray(arr *ValueBrian, paths Path, newValue *ValueBrian) error {
 	indexOpt := paths.FirstIndexPath()
 	if indexOpt.IsAbsent() {
-		return fmt.Errorf("%w: apply left value for array failed with path: %s", ErrBadPath, paths.String())
+		return NewError(BadPath).Append("index for array update is absent")
 	}
 	index := indexOpt.MustGet()
 	array := arr.Value.GetArray()
@@ -113,28 +117,30 @@ func RouteSetOnArray(arr *ValueBrian, paths Path, newValue *ValueBrian) error {
 	}
 	arrSlice := array.MustGet()
 	if index < 0 || index >= len(arrSlice) {
-		return fmt.Errorf("%w: index %d out of range for array with length %d", ErrBadPath, index, len(arrSlice))
+		return NewError(BadPath).Append("index out of bounds for array update")
 	}
 	if paths.Len() == 1 {
 		// 直接替换该 index 的值
 		arrSlice[index] = newValue.Value
-		return arr.Value.Unmarshal(ValueFromArray(arrSlice).RawMessage())
+		return arr.Value.UpdateArray(arrSlice)
 	}
+
 	// 递归设置
 	child := &ValueBrian{Value: arrSlice[index], Parent: arr, IndexInParent: index}
 	if err := RouteSetOnValue(child, paths.NextLevel(), newValue); err != nil {
 		return err
 	}
+
 	// 更新数组
 	arrSlice[index] = child.Value
-	return arr.Value.Unmarshal(ValueFromArray(arrSlice).RawMessage())
+	return arr.Value.UpdateArray(arrSlice)
 }
 
 // RouteSetOnObject 在对象上设置路由
 func RouteSetOnObject(obj *ValueBrian, paths Path, newValue *ValueBrian) error {
 	keyOpt := paths.FirstKeyPath()
 	if keyOpt.IsAbsent() {
-		return fmt.Errorf("%w: apply left value for object failed with path: %s", ErrBadPath, paths.String())
+		return NewError(BadPath).Append("key for object update is absent")
 	}
 	key := keyOpt.MustGet()
 	nodeOpt := obj.Value.GetKey(key)
@@ -164,31 +170,26 @@ func ApplyToValue(val Value, paths Path, operator Operator) error {
 
 		val.PackAny()
 		brainVal := &ValueBrian{Value: val}
-		leftVal, err := RouteGetOnValue(brainVal, left)
+		leftVal, err := RouteGetOnValue(brainVal, left, OperatorForValueType(operator))
 		if err != nil {
 			return err
 		}
 
 		if leftVal.IsAbsent() {
-			return fmt.Errorf("%w: apply left value for path %s failed", ErrBadPath, paths.String())
+			return NewError(InvalidParameter).Append("sub attribute or item not found")
 		}
 
-		err = ApplyToValue(leftVal.MustGet().Value, right, operator)
-		if err != nil {
-			return err
+		if err := ApplyToValue(leftVal.MustGet().Value, right, operator); err != nil {
+			return fmt.Errorf("failed to apply operation on value: %w", err)
 		}
-
-		log.Debugf("ready to set value on left: %s with value: %s\n", left.String(), leftVal.MustGet().Value.RawMessage())
 
 		if err := RouteSetOnValue(brainVal, left, leftVal.MustGet()); err != nil {
-			return fmt.Errorf("failed to set value on path %s: %w", left.String(), err)
+			return fmt.Errorf("failed to update applied value: %w", err)
 		}
 
-		log.Debugf("after apply to left: %s\n", val.RawMessage())
 		return nil
 	}
 
-	val.PackAny()
 	switch val.Type() {
 	case Array:
 		arr := val.GetArray()
@@ -199,25 +200,15 @@ func ApplyToValue(val Value, paths Path, operator Operator) error {
 		if err != nil {
 			return err
 		}
-		node := ValueFromArray(arrNode)
-		log.Debugf("after apply to array: %s\n", node.RawMessage())
-		// 使用 reflect 更新 val 的值
-		return val.Unmarshal(node.RawMessage())
-
+		return val.UpdateArray(arrNode)
 	case Object:
-		log.Debugf("before apply to object: %s\n", val.RawMessage())
 		node, err := ApplyToObject(val, paths, operator)
 		if err != nil {
 			return err
 		}
-		log.Debugf("after apply to object: %s\n", node.RawMessage())
-		return val.Unmarshal(node.RawMessage())
+		return val.UpdateObject(node)
 	default:
-		// 待实现子类型
-		return fmt.Errorf(
-			"%w: unsupported type for apply operator: %s from path: %s for value: %s",
-			ErrBadPath, val.Type(), paths.String(), val.RawMessage(),
-		)
+		return NewError(InvalidParameter).Append("unknown value type for apply operation: %s", val.Type())
 	}
 }
 
@@ -225,7 +216,7 @@ func ApplyToValue(val Value, paths Path, operator Operator) error {
 func ApplyToArray(arr []Value, paths Path, operator Operator) ([]Value, error) {
 	indexOption := paths.FirstIndexPath()
 	if indexOption.IsAbsent() {
-		return nil, fmt.Errorf("%w: apply left value for array failed with path: %s", ErrBadPath, paths.String())
+		return nil, NewError(BadPath).Append("index for array operation is absent")
 	}
 
 	index := indexOption.MustGet()
@@ -235,71 +226,92 @@ func ApplyToArray(arr []Value, paths Path, operator Operator) ([]Value, error) {
 
 	switch op := operator.(type) {
 	case *ListDelete:
-		if op.Value.IsNumeric() || op.Value.IsString() {
-			// 根据 op.value 找到索引，不使用传入的 index
-			index = slices.IndexFunc(arr, func(item Value) bool { return item.Equals(op.Value) })
-		}
-		// 如果已经没有元素了，或者索引不合法，则直接返回
-		if len(arr) == 0 {
-			break
-		}
-
-		if index >= 0 && len(arr) > index {
-			arr = slices.Delete(arr, index, index+1) // 删除一个元素
-		}
+		arr = ApplyListDelete(arr, op, index)
 	case *ListInsert:
-		if index > len(arr) {
-			arr = append(arr, op.Value)
-		} else {
-			arr = slices.Insert(arr, index, op.Value)
-		}
+		arr = ApplyListInsert(arr, op, index)
 	case *ListReplace:
-		if op.OldValue.IsNumeric() || op.OldValue.IsString() {
-			// 根据 op.value 找到索引，不使用传入的 index
-			oldValueIndex := slices.IndexFunc(arr, func(item Value) bool { return item.Equals(op.OldValue) })
-			if oldValueIndex != -1 {
-				index = oldValueIndex
-			}
-		}
-		// 要保证旧值存在
-		if index > 0 && index < len(arr) {
-			if target := arr[index]; !target.IsNull() {
-				arr[index] = op.NewValue
-			}
-		}
+		arr = ApplyListReplace(arr, op, index)
 	case *ListMove:
-		// 要判断就值是存在的
-		if index > 0 && index < len(arr) {
-			if index != op.NewIndex {
-				oldValue := arr[index]
-				arr = slices.Delete(arr, index, index+1)
-				if op.NewIndex > len(arr) {
-					arr = append(arr, oldValue)
-				} else {
-					arr = slices.Insert(arr, op.NewIndex, oldValue)
-				}
-			}
-		}
+		arr = ApplyListMove(arr, op, index)
 	}
 
 	return arr, nil
 }
 
+// ApplyListDelete 从数组中删除元素
+func ApplyListDelete(arr []Value, op *ListDelete, index int) []Value {
+	// 根据 op.value 找到索引，不使用传入的 index
+	index = IndexFunc(arr, op.OlvValue, index)
+	// 如果已经没有元素了，或者索引不合法，则直接返回
+	if len(arr) == 0 {
+		return arr
+	}
+
+	if index >= 0 && len(arr) > index {
+		arr = slices.Delete(arr, index, index+1) // 删除一个元素
+	}
+
+	return arr
+}
+
+// ApplyListInsert 在数组中插入元素
+func ApplyListInsert(arr []Value, op *ListInsert, index int) []Value {
+	if index > len(arr) {
+		arr = append(arr, op.NewValue)
+	} else {
+		arr = slices.Insert(arr, index, op.NewValue)
+	}
+	return arr
+}
+
+// ApplyListReplace 在数组中替换元素
+func ApplyListReplace(arr []Value, op *ListReplace, index int) []Value {
+	// 根据 op.value 找到索引，不使用传入的 index
+	index = IndexFunc(arr, op.OldValue, index)
+
+	// 要保证旧值存在
+	if index > 0 && index < len(arr) {
+		if target := arr[index]; !target.IsNull() {
+			arr[index] = op.NewValue
+		}
+	}
+
+	return arr
+}
+
+// ApplyListMove 在数组中移动元素
+func ApplyListMove(arr []Value, op *ListMove, index int) []Value {
+	// 要判断就值是存在的
+	if index > 0 && index < len(arr) {
+		if index != op.NewIndex {
+			oldValue := arr[index]
+			arr = slices.Delete(arr, index, index+1)
+			if op.NewIndex > len(arr) {
+				arr = append(arr, oldValue)
+			} else {
+				arr = slices.Insert(arr, op.NewIndex, oldValue)
+			}
+		}
+	}
+
+	return arr
+}
+
 // ApplyToObject 将操作应用到对象上
 func ApplyToObject(obj Value, paths Path, operator Operator) (Value, error) {
 	if paths.Len() < 1 {
-		return nil, ErrBadPath
+		return nil, NewError(BadPath).Append("path for object operation is empty")
 	}
 
 	keyOption := paths.FirstKeyPath()
 	if keyOption.IsAbsent() {
-		return nil, ErrBadPath
+		return nil, NewError(BadPath).Append("key for object operation is absent")
 	}
 
 	key := keyOption.MustGet()
 	switch op := operator.(type) {
 	case *ObjectInsert:
-		if err := obj.SetKey(key, op.Value); err != nil {
+		if err := obj.SetKey(key, op.NewValue); err != nil {
 			return nil, fmt.Errorf("failed to insert key %s: %w", key, err)
 		}
 		return obj, nil
@@ -326,10 +338,38 @@ func ApplyToObject(obj Value, paths Path, operator Operator) (Value, error) {
 			if err := obj.SetKey(key, sum); err != nil {
 				return nil, fmt.Errorf("failed to exec subtype update key %s: %w", key, err)
 			}
-			log.Debugf("after apply to object: %s with key: %s, value: %s\n", obj.RawMessage(), key, sum.RawMessage())
 		}
 		return obj, nil
 	default:
 		return nil, fmt.Errorf("apply failed: unsupported operator type: %T", operator)
 	}
+}
+
+// IndexFunc is a helper function to find the index of a value in an array
+func IndexFunc(arr []Value, search Value, inputIndex int) int {
+	var indexes []int
+	if len(arr) == 0 {
+		return -1 // If the array is empty, return -1
+	}
+
+	// 先使用 inputIndex 来查找
+	if inputIndex >= 0 && inputIndex < len(arr) {
+		if arr[inputIndex].Equals(search) {
+			return inputIndex // If the input index matches, return it
+		}
+	}
+
+	if IsSimpleValue(search) {
+		for k := range arr {
+			if arr[k].Equals(search) {
+				indexes = append(indexes, k) // Found the value, return its index
+			}
+		}
+	}
+
+	if len(indexes) == 1 {
+		return indexes[0] // Found only one, return it
+	}
+
+	return inputIndex // If multiple found, return the input index，because we don't know which one to choose
 }

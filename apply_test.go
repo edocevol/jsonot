@@ -10,7 +10,7 @@ import (
 
 // TestApplyNumberAdd 测试 ApplyNumberAdd 操作
 func TestApplyNumberAdd(t *testing.T) {
-	t.Run("TestApplyNumberAddCase1", func(t *testing.T) {
+	t.Run("apply_number_add_case_1", func(t *testing.T) {
 		line := `
 {"p1": 10}
 [{"p":["p1"], "na":100}]
@@ -21,7 +21,7 @@ func TestApplyNumberAdd(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyNumberAdd case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyNumberAddCase2", func(t *testing.T) {
+	t.Run("apply_number_add_case_2", func(t *testing.T) {
 		line := `
 {"p1": 10}
 [{"p":["p1"], "na":-100}]
@@ -32,7 +32,7 @@ func TestApplyNumberAdd(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyNumberAdd case 2 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyNumberAddCase3", func(t *testing.T) {
+	t.Run("apply_number_add_case_3", func(t *testing.T) {
 		line := `
 {"p1": 0.1}
 [{"p":["p1"], "na":-0.1}]
@@ -43,7 +43,7 @@ func TestApplyNumberAdd(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyNumberAdd case 3 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyNumberAddCase4", func(t *testing.T) {
+	t.Run("apply_number_add_case_4", func(t *testing.T) {
 		line := `
 {"p1": 10}
 [{"p":["p1"], "t": "na", "o":100}]
@@ -54,7 +54,7 @@ func TestApplyNumberAdd(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyNumberAdd case 4 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyNumberAddCase5", func(t *testing.T) {
+	t.Run("apply_number_add_case_5", func(t *testing.T) {
 		line := `
 {"p1": 10}
 [{"p":["p1"], "t": "na", "o":-100}]
@@ -65,7 +65,7 @@ func TestApplyNumberAdd(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyNumberAdd case 5 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyNumberAddCase6", func(t *testing.T) {
+	t.Run("apply_number_add_case_6", func(t *testing.T) {
 		line := `
 {"p1": 0.1}
 [{"p":["p1"], "t": "na", "o":-0.1}]
@@ -79,7 +79,7 @@ func TestApplyNumberAdd(t *testing.T) {
 
 // TestApplyText 测试 ApplyText 操作
 func TestApplyText(t *testing.T) {
-	t.Run("TestApplyTextCase1", func(t *testing.T) {
+	t.Run("apply_text_case_1", func(t *testing.T) {
 		line := `
 {"p1": null}
 [{"p":["p1"], "t": "text", "o": {"p":2, "i":"hello"}}]
@@ -90,7 +90,7 @@ func TestApplyText(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyText case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyTextCase2", func(t *testing.T) {
+	t.Run("apply_text_case_2", func(t *testing.T) {
 		line := `
 {"p1": null}
 [{"p":["p1"], "t": "text", "o": {"p":2, "d":"hello"}}]
@@ -101,7 +101,7 @@ func TestApplyText(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyText case 2 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyTextCase3", func(t *testing.T) {
+	t.Run("apply_text_case_3", func(t *testing.T) {
 		line := `
 {}
 [{"p":["p1"], "t": "text", "o": {"p":2, "i":"hello"}}]
@@ -112,7 +112,7 @@ func TestApplyText(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyText case 3 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyTextCase4", func(t *testing.T) {
+	t.Run("apply_text_case_4", func(t *testing.T) {
 		line := `
 {}
 [{"p":["p1"], "t": "text", "o": {"p":2, "d":"hello"}}]
@@ -123,7 +123,7 @@ func TestApplyText(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyText case 4 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyTextCase5", func(t *testing.T) {
+	t.Run("apply_text_case_5", func(t *testing.T) {
 		line := `
 {"p1": "Mr. J"}
 [{"p":["p1"], "t": "text", "o": {"p":5, "i":", hello"}}]
@@ -134,7 +134,7 @@ func TestApplyText(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyText case 5 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyTextCase6", func(t *testing.T) {
+	t.Run("apply_text_case_6", func(t *testing.T) {
 		line := `
 {"p1": "Mr. J"}
 [{"p":["p1"], "t": "text", "o": {"p":0, "i":"hello, "}}]
@@ -145,7 +145,7 @@ func TestApplyText(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyText case 6 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyTextCase7", func(t *testing.T) {
+	t.Run("apply_text_case_7", func(t *testing.T) {
 		line := `
 {"p1": "AB"}
 [{"p":["p1"], "t": "text", "o": {"p":1, "i":" Middle "}}]
@@ -159,7 +159,7 @@ func TestApplyText(t *testing.T) {
 
 // TestApplyObjectInsert 测试 TestApplyObjectInsert 操作
 func TestApplyObjectInsert(t *testing.T) {
-	t.Run("TestApplyObjectCase1", func(t *testing.T) {
+	t.Run("apply_object_case_1", func(t *testing.T) {
 		line := `
 {}
 [{"p":["p1"], "oi":{"p2":{}}}]
@@ -170,7 +170,7 @@ func TestApplyObjectInsert(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyObject case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyObjectCase2", func(t *testing.T) {
+	t.Run("apply_object_case_2", func(t *testing.T) {
 		line := `
 {}
 [{"p":["p1"], "oi":200}]
@@ -181,7 +181,7 @@ func TestApplyObjectInsert(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyObject case 2 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyObjectCase3", func(t *testing.T) {
+	t.Run("apply_object_case_3", func(t *testing.T) {
 		line := `
 {"x":"a"}
 [{"p":["y"],"oi":"b"}]
@@ -192,7 +192,7 @@ func TestApplyObjectInsert(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyObject case 3 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyObjectCase4", func(t *testing.T) {
+	t.Run("apply_object_case_4", func(t *testing.T) {
 		line := `
 {"p1":{"p2":{}}}
 [{"p":["p1", "p2"], "oi":{"p3":[1, {"p4":{}}]}}]
@@ -203,7 +203,7 @@ func TestApplyObjectInsert(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyObject case 4 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyObjectCase5", func(t *testing.T) {
+	t.Run("apply_object_case_5", func(t *testing.T) {
 		line := `
 {"p1":{"p2":{"p3":[1,{"p4":{}}]}}}
 [{"p":["p1", "p2", "p3", 1, "p4"], "oi":{"p5":[1, 2]}}]
@@ -214,7 +214,7 @@ func TestApplyObjectInsert(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyObject case 5 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyObjectCase6", func(t *testing.T) {
+	t.Run("apply_object_case_6", func(t *testing.T) {
 		line := `
 {"p1":{"p2":{"p3":[1,{"p4":{"p5":[1,2]}}]}}}
 [{"p":["p1", "p2", "p3", 1, "p4"], "oi":[3,4]}]
@@ -225,7 +225,7 @@ func TestApplyObjectInsert(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyObject case 6 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("TestApplyObjectCase7", func(t *testing.T) {
+	t.Run("apply_object_case_7", func(t *testing.T) {
 		line := `
 {}
 [{"p":["p1"], "oi":"v2"}]
@@ -239,7 +239,7 @@ func TestApplyObjectInsert(t *testing.T) {
 
 // TestApplyObjectDelete 测试 TestApplyObjectDelete 操作
 func TestApplyObjectDelete(t *testing.T) {
-	t.Run("delete to deep inner object with number index in path", func(t *testing.T) {
+	t.Run("delete_to_deep_inner_object_with_number_index_in_path", func(t *testing.T) {
 		line := `
 {"p1":{"p2":{"p3":[1,{"level41":[1,2], "level42":[3,4]}]}}}
 [{"p":["p1", "p2", "p3", 1, "level41"], "od":[1, 2]}]
@@ -251,7 +251,7 @@ func TestApplyObjectDelete(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyObjectDelete case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("delete to inner object", func(t *testing.T) {
+	t.Run("delete_to_inner_object", func(t *testing.T) {
 		line := `	
 {"p1":{"p2":{"p3":[1,{"level42":[3,4]}]}}}
 [{"p":["p1", "p2", "p3"], "od":[1,{"level41":[1,2], "level42":[3,4]}]}]
@@ -265,7 +265,7 @@ func TestApplyObjectDelete(t *testing.T) {
 
 // TestApplyObjectReplace 测试 TestApplyObjectReplace 操作
 func TestApplyObjectReplace(t *testing.T) {
-	t.Run("replace deep inner object with number index in path", func(t *testing.T) {
+	t.Run("replace_deep_inner_object_with_number_index_in_path", func(t *testing.T) {
 		line := `
 {"p1":{"p2":{"p3":[1,{"level41":[1,2], "level42":[3,4]}]}}}
 [{"p":["p1", "p2", "p3", 1, "level41"], "oi":{"5":"6"}, "od":[1, 2]}]
@@ -277,7 +277,7 @@ func TestApplyObjectReplace(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyObjectReplace case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("replace to inner object", func(t *testing.T) {
+	t.Run("replace_to_inner_object", func(t *testing.T) {
 		line := `
 {"p1":{"p2":{"p3":[1,{"level41":{"5":"6"},"level42":[3,4]}]}}}
 [{"p":["p1", "p2"], "oi":"hello", "od":{"p3":[1,{"level41":[1,2], "level42":[3,4]}]}}]
@@ -291,7 +291,7 @@ func TestApplyObjectReplace(t *testing.T) {
 
 // TestApplyListInsert 测试 TestApplyListInsert 操作
 func TestApplyListInsert(t *testing.T) {
-	t.Run("insert to empty array", func(t *testing.T) {
+	t.Run("insert_to_empty_array", func(t *testing.T) {
 		line := `
 {"p1": []}
 [{"p":["p1", 0], "li":{"hello":[1]}}]
@@ -302,7 +302,7 @@ func TestApplyListInsert(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyListInsert case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("insert to array", func(t *testing.T) {
+	t.Run("insert_to_array", func(t *testing.T) {
 		line := `
 {"p1":[{"hello":[1]}]}
 [{"p":["p1", 0], "li":1}]
@@ -313,7 +313,7 @@ func TestApplyListInsert(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyListInsert case 2 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("insert to inner array", func(t *testing.T) {
+	t.Run("insert_to_inner_array", func(t *testing.T) {
 		line := `
 {"p1":[1,{"hello":[1]}]}
 [{"p":["p1", 1, "hello",1], "li":[7,8]}]
@@ -338,7 +338,7 @@ func TestApplyListInsert(t *testing.T) {
 
 // TestApplyListDelete 测试 TestApplyListDelete 操作
 func TestApplyListDelete(t *testing.T) {
-	t.Run("delete empty array", func(t *testing.T) {
+	t.Run("delete_empty_array", func(t *testing.T) {
 		line := `
 {"p1": []}
 [{"p":["p1", 0], "ld":{}}]
@@ -349,7 +349,7 @@ func TestApplyListDelete(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyListDelete case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("delete inner array", func(t *testing.T) {
+	t.Run("delete_inner_array", func(t *testing.T) {
 		line := `
 {"p1":[1,{"hello":[1,[7,8]]}]}
 [{"p":["p1", 1, "hello", 1], "ld":[7,8]}]
@@ -360,7 +360,7 @@ func TestApplyListDelete(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyListDelete case 2 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("delete inner object", func(t *testing.T) {
+	t.Run("delete_inner_object", func(t *testing.T) {
 		line := `
 {"p1":[1,{"hello":[1]}]}
 [{"p":["p1", 1], "ld":{"hello":[1,[7,8]]}}]
@@ -372,9 +372,23 @@ func TestApplyListDelete(t *testing.T) {
 	})
 }
 
+// TestApplyListDeleteForIssuesTagV0-0-3
+func TestApplyListDeleteForIssuesTagV003(t *testing.T) {
+	t.Run("delete_inner_object", func(t *testing.T) {
+		line := `
+{"name":"json0","content":["bbb","aaa","music"]}
+[{"ld":"aaa","n":"","p":["content","0"]}]
+{"name":"json0","content":["bbb","music"]}
+`
+		ot := NewJSONOperationTransformer()
+		actual, expected := RunApplyTestCase(t, ot, line)
+		assert.JSONEqf(t, actual, expected, "ApplyListDelete case 3 failed, expected %s, got %s", expected, actual)
+	})
+}
+
 // TestApplyListReplace 测试 TestApplyListReplace 操作
 func TestApplyListReplace(t *testing.T) {
-	t.Run("replace from inner array", func(t *testing.T) {
+	t.Run("replace_from_inner_array", func(t *testing.T) {
 		line := `
 {"p1":[1,{"hello":[1,[7,8]]}]}
 [{"p":["p1", 1, "hello", 1], "li":{"hello":"world"}, "ld":[7,8]}]
@@ -385,7 +399,7 @@ func TestApplyListReplace(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyListReplace case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("replace from inner object", func(t *testing.T) {
+	t.Run("replace_from_inner_object", func(t *testing.T) {
 		line := `
 {"p1":[1,{"hello":[1,{"hello":"world"}]}]}
 [{"p":["p1", 1], "li": {"hello":"world"}, "ld":{"hello":[1,[7,8]]}}]
@@ -399,7 +413,7 @@ func TestApplyListReplace(t *testing.T) {
 
 // TestApplyListMove 测试 TestApplyListMove 操作
 func TestApplyListMove(t *testing.T) {
-	t.Run("move left", func(t *testing.T) {
+	t.Run("move_left", func(t *testing.T) {
 		line := `
 {"p1":[1,{"hello":[1,[7,8], 9, 10]}]}
 [{"p":["p1", 1, "hello", 2], "lm":1}]
@@ -410,7 +424,7 @@ func TestApplyListMove(t *testing.T) {
 		assert.JSONEqf(t, actual, expected, "ApplyListMove case 1 failed, expected %s, got %s", expected, actual)
 	})
 
-	t.Run("move right", func(t *testing.T) {
+	t.Run("move_right", func(t *testing.T) {
 		line := `
 {"p1":[1,{"hello":[1,[7,8], 9, 10]}]}
 [{"p":["p1", 1, "hello", 1], "lm":2}]
@@ -471,7 +485,7 @@ func ParseApplyCase(t *testing.T, ot *JSONOperationTransformer, lines string) (v
 		t.Fatalf("failed to parse operation node: %v", err)
 	}
 	log.Debugf("got operation node: %s\n", opNode.RawMessage())
-	op = NewOperation(ot.OperationComponentsFromNode(opNode).MustGet())
+	op = NewOperation(ot.OperationComponentsFromValue(opNode).MustGet())
 
 	expected, err = UnmarshalValue([]byte(cases[2]))
 	if err != nil {

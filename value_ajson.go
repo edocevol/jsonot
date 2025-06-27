@@ -8,6 +8,11 @@ import (
 	"github.com/spyzhov/ajson"
 )
 
+// NewAJSONValue 创建一个新的 AJSONValue
+func NewAJSONValue(node *ajson.Node) *AJSONValue {
+	return &AJSONValue{node: node}
+}
+
 var _ Value = (*AJSONValue)(nil)
 
 // AJSONValue 定义了 JSON Object 的节点
@@ -15,18 +20,8 @@ type AJSONValue struct {
 	node *ajson.Node
 }
 
-// NewAJSONValue 创建一个新的 AJSONValue
-func NewAJSONValue(node *ajson.Node) *AJSONValue {
-	return &AJSONValue{node: node}
-}
-
-// Format 实现 fmt.Formatter 接口，用于格式化输出
-func (n *AJSONValue) Format(st fmt.State, verb rune) {
-	_, _ = fmt.Fprint(st, string(n.RawMessage()))
-}
-
 // Type returns the type of the JSON node
-func (n *AJSONValue) Type() NodeType {
+func (n *AJSONValue) Type() ValueType {
 	switch n.node.Type() {
 	case ajson.Null:
 		return Null
@@ -95,7 +90,7 @@ func (n *AJSONValue) IsObject() bool {
 func (n *AJSONValue) Unmarshal(data []byte) error {
 	node, err := ajson.Unmarshal(data)
 	if err != nil {
-		return err
+		return NewError(UnexpectedError).Wrap(err)
 	}
 
 	n.node = node
@@ -104,7 +99,6 @@ func (n *AJSONValue) Unmarshal(data []byte) error {
 
 // PackAny parses any type of data into the JSON node
 func (n *AJSONValue) PackAny() {
-	return
 }
 
 // GetKey retrieves a key from the JSON object
@@ -190,6 +184,35 @@ func (n *AJSONValue) GetArray() mo.Result[[]Value] {
 	return mo.Ok(result)
 }
 
+// UpdateArray 从传入的 Value 数组更新当前 Value
+func (n *AJSONValue) UpdateArray(values []Value) error {
+	var nodes []*ajson.Node
+	for _, v := range values {
+		if av, ok := v.(*AJSONValue); ok {
+			nodes = append(nodes, av.node.Clone())
+		} else {
+			return fmt.Errorf("value is not an AJSONValue")
+		}
+	}
+
+	if err := n.node.SetArray(nodes); err != nil {
+		return fmt.Errorf("failed to update array: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateObject 从传入的 Value 更新当前 Value
+func (n *AJSONValue) UpdateObject(values Value) error {
+	mapValues, ok := values.(*AJSONValue)
+	if !ok {
+		return fmt.Errorf("value is not an AJSONValue")
+	}
+
+	n.node = mapValues.node
+	return nil
+}
+
 // GetMap retrieves the map from the JSON node
 func (n *AJSONValue) GetMap() mo.Result[map[string]Value] {
 	properties, err := n.node.GetObject()
@@ -271,7 +294,7 @@ func (n *AJSONValue) SetKey(key string, value Value) error {
 	case ajson.Array:
 		return childNode.SetArray(vnode.node.MustArray())
 	default:
-		return fmt.Errorf("%w: bad value type for key %s", ErrBadPath, key)
+		return NewError(BadPath).Append("attempt to set unsupported type in JSON object")
 	}
 }
 
@@ -322,4 +345,9 @@ func (n *AJSONValue) RawMessage() json.RawMessage {
 
 	bytes, _ := json.Marshal(val)
 	return bytes
+}
+
+// Format 实现 fmt.Formatter 接口，用于格式化输出
+func (n *AJSONValue) Format(st fmt.State, _ rune) {
+	_, _ = fmt.Fprint(st, string(n.RawMessage()))
 }

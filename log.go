@@ -6,7 +6,7 @@ import (
 
 var (
 	// enableDebugLog 是否启用调试日志
-enableDebugLog = false
+	enableDebugLog = false
 	// log 日志记录器
 	log Logger = &FmtLogger{}
 )

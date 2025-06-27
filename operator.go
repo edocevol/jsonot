@@ -12,6 +12,19 @@ type Operator interface {
 	Clone() Operator
 }
 
+// OperatorForValueType returns an operator for the given value type.
+func OperatorForValueType(op Operator) ValueType {
+	action := op.Action()
+	switch action {
+	case ActionObjectInsert, ActionObjectDelete, ActionObjectReplace:
+		return Object
+	case ActionListInsert, ActionListDelete, ActionListMove, ActionListReplace:
+		return Array
+	default:
+		return Null
+	}
+}
+
 var (
 	_ Operator = (*Noop)(nil)
 	_ Operator = (*ListInsert)(nil)
@@ -32,7 +45,7 @@ func NewNoop() *Noop {
 }
 
 // Format formats the operator for debugging.
-func (n Noop) Format(f fmt.State, verb rune) {
+func (n Noop) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "Noop Operator")
 }
 
@@ -53,23 +66,23 @@ func (n Noop) Clone() Operator {
 
 // ListInsert creates a list insert operator.
 type ListInsert struct {
-	Value Value
+	NewValue Value
 }
 
 // Clone returns a copy of the operator.
 func (l *ListInsert) Clone() Operator {
-	return NewListInsert(l.Value)
+	return NewListInsert(l.NewValue)
 }
 
 // Format formats the operator for debugging.
-func (l *ListInsert) Format(f fmt.State, verb rune) {
-	_, _ = fmt.Fprintf(f, "ListInsert{%v}", l.Value)
+func (l *ListInsert) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "ListInsert{%v}", l.NewValue)
 }
 
 // NewListInsert creates a list insert operator.
-func NewListInsert(value Value) *ListInsert {
+func NewListInsert(newValue Value) *ListInsert {
 	return &ListInsert{
-		Value: value,
+		NewValue: newValue,
 	}
 }
 
@@ -85,23 +98,23 @@ func (l *ListInsert) Validates() error {
 
 // ListDelete creates a list delete operator.
 type ListDelete struct {
-	Value Value
+	OlvValue Value
 }
 
 // Clone returns a copy of the operator.
 func (l *ListDelete) Clone() Operator {
-	return NewListDelete(l.Value)
+	return NewListDelete(l.OlvValue)
 }
 
 // Format formats the operator for debugging.
-func (l *ListDelete) Format(f fmt.State, verb rune) {
-	_, _ = fmt.Fprintf(f, "ListDelete{%v}", l.Value)
+func (l *ListDelete) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "ListDelete{%v}", l.OlvValue)
 }
 
 // NewListDelete creates a list delete operator.
-func NewListDelete(value Value) *ListDelete {
+func NewListDelete(oldValue Value) *ListDelete {
 	return &ListDelete{
-		Value: value,
+		OlvValue: oldValue,
 	}
 }
 
@@ -135,7 +148,7 @@ func NewListReplace(newValue, oldValue Value) *ListReplace {
 }
 
 // Format formats the operator for debugging.
-func (l *ListReplace) Format(f fmt.State, verb rune) {
+func (l *ListReplace) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "ListReplace{NewValue: %v, OldValue: %v}", l.NewValue, l.OldValue)
 }
 
@@ -160,7 +173,7 @@ func (l *ListMove) Clone() Operator {
 }
 
 // Format formats the operator for debugging.
-func (l *ListMove) Format(f fmt.State, verb rune) {
+func (l *ListMove) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "ListMove{NewIndex: %d}", l.NewIndex)
 }
 
@@ -179,30 +192,30 @@ func (l *ListMove) Action() Action {
 // Validates returns nil if the operator is valid.
 func (l *ListMove) Validates() error {
 	if l.NewIndex < 0 {
-		return ErrInvalidParameter
+		return NewError(InvalidParameter).Append("new index for list move operator must be non-negative")
 	}
 	return nil
 }
 
 // ObjectInsert creates an object insert operator.
 type ObjectInsert struct {
-	Value Value
+	NewValue Value
 }
 
 // Clone returns a copy of the operator.
 func (o *ObjectInsert) Clone() Operator {
-	return NewObjectInsert(o.Value)
+	return NewObjectInsert(o.NewValue)
 }
 
 // Format formats the operator for debugging.
-func (o *ObjectInsert) Format(f fmt.State, verb rune) {
-	_, _ = fmt.Fprintf(f, "ObjectInsert{%v}", o.Value)
+func (o *ObjectInsert) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "ObjectInsert{%v}", o.NewValue)
 }
 
 // NewObjectInsert creates an object insert operator.
-func NewObjectInsert(value Value) *ObjectInsert {
+func NewObjectInsert(newValue Value) *ObjectInsert {
 	return &ObjectInsert{
-		Value: value,
+		NewValue: newValue,
 	}
 }
 
@@ -218,24 +231,24 @@ func (o *ObjectInsert) Action() Action {
 
 // ObjectDelete creates an object delete operator.
 type ObjectDelete struct {
-	Value Value
+	OldValue Value
 }
 
 // Clone returns a copy of the operator.
 func (o *ObjectDelete) Clone() Operator {
-	return NewObjectDelete(o.Value)
+	return NewObjectDelete(o.OldValue)
 }
 
 // NewObjectDelete creates an object delete operator.
 func NewObjectDelete(value Value) *ObjectDelete {
 	return &ObjectDelete{
-		Value: value,
+		OldValue: value,
 	}
 }
 
 // Format formats the operator for debugging.
-func (o *ObjectDelete) Format(f fmt.State, verb rune) {
-	_, _ = fmt.Fprintf(f, "ObjectDelete{%v}", o.Value)
+func (o *ObjectDelete) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "ObjectDelete{%v}", o.OldValue)
 }
 
 // Action returns the action of the operator.
@@ -260,7 +273,7 @@ func (o *ObjectReplace) Clone() Operator {
 }
 
 // Format formats the operator for debugging.
-func (o *ObjectReplace) Format(f fmt.State, verb rune) {
+func (o *ObjectReplace) Format(f fmt.State, _ rune) {
 	_, _ = fmt.Fprintf(f, "ObjectReplace{NewValue: %v, OldValue: %v}", o.NewValue, o.OldValue)
 }
 
@@ -307,8 +320,8 @@ func NewSubTypeOperator(subType SubType, val Value, subTypeFunctions SubTypeFunc
 }
 
 // Format formats the operator for debugging.
-func (s *SubTypeOperator) Format(f fmt.State, verb rune) {
-	_, _ = fmt.Fprintf(f, "SubTypeOperator{SubType: %s, Value: %v}", s.SubType.TypeName(), s.Value)
+func (s *SubTypeOperator) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "SubTypeOperator{SubType: %s, NewValue: %v}", s.SubType.TypeName(), s.Value)
 }
 
 // Action returns the action of the operator.

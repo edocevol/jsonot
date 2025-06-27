@@ -7,11 +7,11 @@ import (
 	"github.com/samber/mo"
 )
 
-// NodeType 定义了 JSON Object 的节点类型
-type NodeType int
+// ValueType 定义了 JSON Object 的节点类型
+type ValueType int
 
-// Format implements fmt.Formatter interface for NodeType
-func (nt NodeType) Format(st fmt.State, verb rune) {
+// Format implements fmt.Formatter interface for ValueType
+func (nt ValueType) Format(st fmt.State, _ rune) {
 	switch nt {
 	case Null:
 		_, _ = fmt.Fprint(st, "null")
@@ -34,7 +34,7 @@ func (nt NodeType) Format(st fmt.State, verb rune) {
 
 const (
 	// Null is reflection of nil.(interface{})
-	Null NodeType = iota
+	Null ValueType = iota
 	// Numeric is reflection of float64
 	Numeric
 	// String is reflection of string
@@ -59,7 +59,7 @@ type ApplierOperator interface {
 type Value interface {
 	Format(st fmt.State, verb rune)
 	// Type 返回节点的类型
-	Type() NodeType
+	Type() ValueType
 	// IsBool 返回节点是否为布尔类型
 	IsBool() bool
 	// IsNull 返回节点是否为 null 类型
@@ -96,6 +96,10 @@ type Value interface {
 	GetInt() mo.Result[int]
 	// GetString 返回节点的字符串值，如果是字符串类型
 	GetString() mo.Result[string]
+	// UpdateArray 从传入的 Value 数组更新当前 Value
+	UpdateArray(values []Value) error
+	// UpdateObject 从传入的 Value 更新当前 Value
+	UpdateObject(value Value) error
 	// SetKey 设置对象中的键名，如果是对象类型
 	SetKey(key string, value Value) error
 	// DeleteKey 删除对象中的键名，如果是对象类型
@@ -112,8 +116,33 @@ type Value interface {
 
 // ValueBrian 定义了 value 的血统信息
 type ValueBrian struct {
-	KeyInParent   string      // 当前节点在父节点中的键名
-	IndexInParent int         // 当前节点在父节点中的索引
-	Value         Value       // 当前节点的值
-	Parent        *ValueBrian // 当前节点的父节点
+	Value         Value
+	Parent        *ValueBrian
+	KeyInParent   string
+	IndexInParent int
+}
+
+// IsSimpleValue 检查 ValueBrian 是否是简单值
+func IsSimpleValue(v Value) bool {
+	return v.IsNull() || v.IsBool() || v.IsNumeric() || v.IsString()
+}
+
+// NewValue 创建一个新的 ValueBrian
+func NewValue(valueType ValueType) Value {
+	switch valueType {
+	case Array:
+		return ValueFromAny([]any{})
+	case Object:
+		return ValueFromAny(map[string]any{})
+	case String:
+		return ValueFromAny("")
+	case Numeric:
+		return ValueFromAny(0.0)
+	case Bool:
+		return ValueFromAny(false)
+	case Null:
+		return ValueFromAny(nil)
+	default:
+		return ValueFromAny(nil) // 默认返回 nil
+	}
 }

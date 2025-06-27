@@ -79,7 +79,7 @@ func TestInvert(t *testing.T) {
 				t.Fatalf("Invert() error = %v", result.Error())
 			}
 
-			assert.JSONEq(t, tt.expected, string(result.MustGet().ToNode().RawMessage()), "Invert() result mismatch")
+			assert.JSONEq(t, tt.expected, string(result.MustGet().ToValue().RawMessage()), "Invert() result mismatch")
 		})
 	}
 }

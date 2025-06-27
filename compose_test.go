@@ -199,20 +199,20 @@ func RunComposeTest(t *testing.T, lines string) (actual, expected string) {
 	}
 
 	ot := NewJSONOperationTransformer()
-	baseOperationComponents := ot.OperationComponentsFromNode(actions[0])
+	baseOperationComponents := ot.OperationComponentsFromValue(actions[0])
 	baseOperation := NewOperation(baseOperationComponents.MustGet())
 	for i := 1; i < len(actions)-1; i++ {
-		nextOperation := ot.OperationComponentsFromNode(actions[i])
+		nextOperation := ot.OperationComponentsFromValue(actions[i])
 		if nextOperation.IsError() {
-			t.Errorf("OperationComponentsFromNode failed: %v", nextOperation.Error())
+			t.Errorf("OperationComponentsFromValue failed: %v", nextOperation.Error())
 			return
 		}
 		nextOp := NewOperation(nextOperation.MustGet())
 		baseOperation.Compose(nextOp)
 	}
 
-	expectedOperation := NewOperation(ot.OperationComponentsFromNode(actions[len(actions)-1]).MustGet())
-	actual = string(baseOperation.ToNode().RawMessage())
-	expected = string(expectedOperation.ToNode().RawMessage())
+	expectedOperation := NewOperation(ot.OperationComponentsFromValue(actions[len(actions)-1]).MustGet())
+	actual = string(baseOperation.ToValue().RawMessage())
+	expected = string(expectedOperation.ToValue().RawMessage())
 	return
 }

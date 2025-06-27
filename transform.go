@@ -23,9 +23,12 @@ func IsEquivalentToNoop(op *OperationComponent) bool {
 		return false
 	case *ListInsert, *ListDelete, *ObjectInsert, *ObjectDelete:
 		return false
-	case *ListReplace, *ObjectReplace:
+	case *ListReplace:
 		// 如果新值等于旧值，则等价于 Noop
-		return op.Operator.(*ListReplace).NewValue.Equals(op.Operator.(*ListReplace).OldValue)
+		return v1.NewValue.Equals(v1.OldValue)
+	case *ObjectReplace:
+		// 如果新值等于旧值，则等价于 Noop
+		return v1.NewValue.Equals(v1.OldValue)
 	case *ListMove:
 		// 如果操作的路径的最后一个元素是新值的索引，则等价于 Noop
 		lastPath := op.Path.Last()
@@ -59,7 +62,7 @@ func NewTransformer() *Transformer {
 // Transform 对一个操作进行转换
 func (t *Transformer) Transform(
 	operation, baseOperation *Operation,
-) (mo.Result[*Operation], mo.Result[*Operation], error) {
+) (leftTransformed, rightTransformed mo.Result[*Operation], err error) {
 	if baseOperation.IsEmpty() {
 		return mo.Ok(operation), mo.Ok(EmptyOperation()), nil
 	}
@@ -74,17 +77,17 @@ func (t *Transformer) Transform(
 	if operation.Len() == 1 && baseOperation.Len() == 1 {
 		newOp, _ := operation.Operations.Front().Value.(*OperationComponent)
 		baseOp, _ := baseOperation.Operations.Front().Value.(*OperationComponent)
-		a, err := t.TransformComponent(newOp.Clone(), baseOp.Clone(), TransformSideLeft)
-		if err != nil {
+
+		var left, right mo.Result[[]*OperationComponent]
+		if left, err = t.TransformComponent(newOp.Clone(), baseOp.Clone(), TransformSideLeft); err != nil {
 			return mo.Err[*Operation](err), mo.Err[*Operation](err), err
 		}
 
-		b, err := t.TransformComponent(baseOp.Clone(), newOp.Clone(), TransformSideRight)
-		if err != nil {
+		if right, err = t.TransformComponent(baseOp.Clone(), newOp.Clone(), TransformSideRight); err != nil {
 			return mo.Err[*Operation](err), mo.Err[*Operation](err), err
 		}
 
-		return mo.Ok(NewOperation(a.MustGet())), mo.Ok(NewOperation(b.MustGet())), nil
+		return mo.Ok(NewOperation(left.MustGet())), mo.Ok(NewOperation(right.MustGet())), nil
 	}
 
 	// 如果是多个操作，则需要转换整个操作矩阵
@@ -96,7 +99,7 @@ func (t *Transformer) Transform(
 // 要求左右的操作都是非空的
 func (t *Transformer) TransformMatrix(
 	operation, baseOperation *Operation,
-) (mo.Result[*Operation], mo.Result[*Operation], error) {
+) (lop, rop mo.Result[*Operation], err error) {
 	if operation.IsEmpty() || baseOperation.IsEmpty() {
 		return mo.Ok(operation), mo.Ok(baseOperation), nil
 	}
@@ -122,7 +125,7 @@ func (t *Transformer) TransformMatrix(
 // TransformMulti 对多个操作进行转换
 func (t *Transformer) TransformMulti(
 	operation *Operation, baseOperation *OperationComponent,
-) (mo.Result[*Operation], mo.Result[*OperationComponent], error) {
+) (newOp mo.Result[*Operation], components mo.Result[*OperationComponent], err error) {
 	var out []*OperationComponent
 	base := baseOperation.NotNoop()
 	for item := operation.Operations.Front(); item != nil; item = item.Next() {
@@ -143,13 +146,12 @@ func (t *Transformer) TransformMulti(
 			return mo.Err[*Operation](b.Error()), mo.Err[*OperationComponent](b.Error()), b.Error()
 		}
 		bOps := b.MustGet()
-		if len(bOps) == 1 {
+		if len(bOps) <= 1 {
 			break
 		}
 
 		// 执行 base = b.pop
 		base = mo.Some(b.MustGet()[0])
-		b = mo.Ok(bOps[1:])
 		out = append(out, a.MustGet()...)
 	}
 
@@ -228,15 +230,15 @@ func (t *Transformer) Consume(
 	switch v := op.Operator.(type) {
 	case *ListDelete:
 		_, p2 := other.Path.SplitAt(commonPath.Len())
-		_ = ApplyToValue(v.Value, p2, other.Operator)
+		_ = ApplyToValue(v.OlvValue, p2, other.Operator)
 	case *ListReplace:
 		_, p2 := other.Path.SplitAt(commonPath.Len())
 		log.Debugf("before apply spited value:%s", v.OldValue.RawMessage())
 		_ = ApplyToValue(v.OldValue, p2, other.Operator)
-		log.Debugf("after apply spited value:%s with operator: %s", v.OldValue.RawMessage(), other.ToNode().RawMessage())
+		log.Debugf("after apply spited value:%s with operator: %s", v.OldValue.RawMessage(), other.ToValue().RawMessage())
 	case *ObjectDelete:
 		_, p2 := other.Path.SplitAt(commonPath.Len())
-		_ = ApplyToValue(v.Value, p2, other.Operator)
+		_ = ApplyToValue(v.OldValue, p2, other.Operator)
 	case *ObjectReplace:
 		_, p2 := other.Path.SplitAt(commonPath.Len())
 		_ = ApplyToValue(v.OldValue, p2, other.Operator)
@@ -296,9 +298,9 @@ func (t *Transformer) TransformComponentForListReplace(
 				NewOperationComponent(newOp.Path,
 					NewListReplace(nop.NewValue, listReplace.NewValue)).MustGet(),
 			}), nil
-		} else {
-			return mo.Ok([]*OperationComponent{}), nil
 		}
+
+		return mo.Ok([]*OperationComponent{}), nil
 	}
 
 	if _, ok := newOp.Operator.(*ListDelete); ok {
@@ -404,7 +406,14 @@ func (t *Transformer) TransformComponentForObjectReplace(
 			return mo.Ok([]*OperationComponent{}), nil
 		}
 		return mo.Ok([]*OperationComponent{
-			NewOperationComponent(newOp.Path, NewObjectReplace(nop.NewValue, objectReplace.OldValue)).MustGet(),
+			NewOperationComponent(newOp.Path, NewObjectReplace(nop.NewValue, objectReplace.NewValue)).MustGet(),
+		}), nil
+	case *ObjectInsert:
+		if side == TransformSideRight {
+			return mo.Ok([]*OperationComponent{}), nil
+		}
+		return mo.Ok([]*OperationComponent{
+			NewOperationComponent(newOp.Path, NewObjectReplace(nop.NewValue, objectReplace.NewValue)).MustGet(),
 		}), nil
 	default:
 		return mo.Ok([]*OperationComponent{}), nil
@@ -423,56 +432,73 @@ func (t *Transformer) TransformComponentForObjectInsert(
 
 	switch nop := newOp.Operator.(type) {
 	case *ObjectReplace:
-		if side == TransformSideLeft {
-			if IsSameOperand(baseOp, newOp) {
-				return mo.Ok([]*OperationComponent{
-					NewOperationComponent(baseOp.Path, NewObjectReplace(nop.NewValue, objectInsert.Value)).MustGet(),
-					newOp,
-				}), nil
-			}
+		if side == TransformSideRight {
 			return mo.Ok([]*OperationComponent{}), nil
 		}
+		if IsSameOperand(baseOp, newOp) {
+			return mo.Ok([]*OperationComponent{
+				NewOperationComponent(baseOp.Path, NewObjectReplace(nop.NewValue, objectInsert.NewValue)).MustGet(),
+			}), nil
+		}
+		return mo.Ok([]*OperationComponent{
+			NewOperationComponent(baseOp.Path, NewObjectDelete(objectInsert.NewValue)).MustGet(),
+			newOp,
+		}), nil
 	case *ObjectInsert:
-		if side == TransformSideLeft {
-			if IsSameOperand(baseOp, newOp) {
-				return mo.Ok([]*OperationComponent{
-					NewOperationComponent(baseOp.Path, NewObjectReplace(nop.Value, objectInsert.Value)).MustGet(),
-					newOp,
-				}), nil
-			}
+		if side == TransformSideRight {
 			return mo.Ok([]*OperationComponent{}), nil
 		}
+		if IsSameOperand(baseOp, newOp) {
+			return mo.Ok([]*OperationComponent{
+				NewOperationComponent(baseOp.Path, NewObjectReplace(nop.NewValue, objectInsert.NewValue)).MustGet(),
+			}), nil
+		}
+		return mo.Ok([]*OperationComponent{
+			NewOperationComponent(baseOp.Path, NewObjectDelete(objectInsert.NewValue)).MustGet(),
+			newOp,
+		}), nil
 	case *ObjectDelete:
 		if side == TransformSideRight {
 			return mo.Ok([]*OperationComponent{}), nil
 		}
+		return mo.Ok([]*OperationComponent{newOp}), nil
 	}
-
 	return mo.Ok([]*OperationComponent{newOp}), nil
 }
 
 // TransformComponentForObjectDelete 对一个 ObjectDelete 操作进行转换
 func (t *Transformer) TransformComponentForObjectDelete(
 	newOp, baseOp *OperationComponent,
-	_ TransformSide,
+	side TransformSide,
 	_ *ObjectDelete,
 ) (mo.Result[[]*OperationComponent], error) {
-	if baseOp.Path.IsPrefixOf(newOp.Path) {
+	if !baseOp.Path.IsPrefixOf(newOp.Path) {
 		return mo.Ok([]*OperationComponent{newOp}), nil
 	}
-	if IsSameOperand(baseOp, newOp) {
+
+	// 如果是不同的操作数，则直接返回空
+	if !IsSameOperand(baseOp, newOp) {
 		return mo.Ok([]*OperationComponent{}), nil
-	}
-	if _, ok := newOp.Operator.(*ObjectDelete); ok {
-		return mo.Ok([]*OperationComponent{}), nil
-	}
-	if lr, ok := newOp.Operator.(*ObjectReplace); ok {
-		return mo.Ok([]*OperationComponent{
-			NewOperationComponent(newOp.Path, NewObjectInsert(lr.NewValue)).MustGet(),
-		}), nil
 	}
 
-	return mo.Ok([]*OperationComponent{}), nil
+	switch nop := newOp.Operator.(type) {
+	case *ObjectReplace:
+		if side == TransformSideRight {
+			return mo.Ok([]*OperationComponent{}), nil
+		}
+		return mo.Ok([]*OperationComponent{
+			NewOperationComponent(newOp.Path, NewObjectInsert(nop.NewValue)).MustGet(),
+		}), nil
+	case *ObjectInsert:
+		if side == TransformSideRight {
+			return mo.Ok([]*OperationComponent{}), nil
+		}
+		return mo.Ok([]*OperationComponent{
+			NewOperationComponent(newOp.Path, NewObjectInsert(nop.NewValue)).MustGet(),
+		}), nil
+	default:
+		return mo.Ok([]*OperationComponent{}), nil
+	}
 }
 
 // TransformComponentForListMove 对一个 ListMove 操作进行转换
@@ -481,7 +507,7 @@ func (t *Transformer) TransformComponentForListMove(
 	side TransformSide,
 	listMove *ListMove,
 ) (mo.Result[[]*OperationComponent], error) {
-	if IsSameOperand(newOp, baseOp) {
+	if IsSameOperand(baseOp, newOp) {
 		switch newOperator := newOp.Operator.(type) {
 		case *ListMove:
 			return t.TransformComponentForListMoveWithListMove(newOp, baseOp, side, listMove, newOperator)
@@ -515,67 +541,88 @@ func (t *Transformer) TransformComponentForListMoveWithListMove(
 	side TransformSide,
 	listMove, newListMove *ListMove,
 ) (mo.Result[[]*OperationComponent], error) {
-	otherFrom := baseOp.Path.Get(newOp.OperatePathLen()).MustGet()
+	baseOpOperatePathLen := baseOp.OperatePathLen()
+	newOpOperatePathLen := newOp.OperatePathLen()
+	otherFrom := baseOp.Path.Get(newOpOperatePathLen).MustGet()
 	otherTo := PathElement{Index: listMove.NewIndex}
 
 	if otherFrom == otherTo {
-		return mo.Ok([]*OperationComponent{}), nil
+		return mo.Ok([]*OperationComponent{newOp}), nil
 	}
 
-	from := newOp.Path.Get(newOp.OperatePathLen()).MustGet()
+	from := newOp.Path.Get(newOpOperatePathLen).MustGet()
 	to := PathElement{Index: newListMove.NewIndex}
 	if from == otherFrom {
 		if to == otherTo {
 			// already moved to where we want
 			return mo.Ok([]*OperationComponent{}), nil
 		}
+
 		if side == TransformSideLeft {
-			newOp.Path.Replace(baseOp.OperatePathLen(), otherTo)
+			newOp.Path.Replace(baseOpOperatePathLen, otherTo)
 			if from == to {
 				newOp.Operator = baseOp.Operator
 			}
-		} else {
-			return mo.Ok([]*OperationComponent{}), nil
+			return mo.Ok([]*OperationComponent{newOp}), nil
 		}
-		return mo.Ok([]*OperationComponent{newOp}), nil
+
+		return mo.Ok([]*OperationComponent{}), nil
 	}
 
 	newListMoveIndex := newListMove.NewIndex
+	newListMoveIndex = t.mergeListMoveIndex(
+		newOp, newListMoveIndex, baseOpOperatePathLen, side, from, to, otherFrom, otherTo,
+	)
+
+	newOp.Operator = NewListMove(newListMoveIndex)
+	return mo.Ok([]*OperationComponent{newOp}), nil
+}
+
+// mergeListMoveIndex 合并 ListMove 的索引
+func (t *Transformer) mergeListMoveIndex(
+	newOp *OperationComponent,
+	newListMoveIndex int,
+	baseOpOperatePathLen int,
+	side TransformSide,
+	from PathElement,
+	to PathElement,
+	otherFrom PathElement,
+	otherTo PathElement,
+) int {
 	if from.Index > otherFrom.Index {
-		newOp.Path.DecreaseIndex(baseOp.OperatePathLen())
+		newOp.Path.DecreaseIndex(baseOpOperatePathLen)
 	}
 	if from.Index > otherTo.Index {
-		newOp.Path.IncreaseIndex(baseOp.OperatePathLen())
+		newOp.Path.IncreaseIndex(baseOpOperatePathLen)
 	} else if from.Index == otherTo.Index && otherFrom.Index > otherTo.Index {
-		newOp.Path.IncreaseIndex(baseOp.OperatePathLen())
+		newOp.Path.IncreaseIndex(baseOpOperatePathLen)
 		if from.Index == to.Index {
-			newListMoveIndex += 1
+			newListMoveIndex++
 		}
 	}
 
 	if to.Index > otherFrom.Index || (to.Index == otherFrom.Index && to.Index > from.Index) {
-		newListMoveIndex -= 1
+		newListMoveIndex--
 	}
 
 	if to.Index > otherTo.Index {
-		newListMoveIndex += 1
+		newListMoveIndex++
 	}
 
 	if to.Index == otherTo.Index {
 		if (otherTo.Index > otherFrom.Index && to.Index > from.Index) ||
 			(otherTo.Index < otherFrom.Index && to.Index < from.Index) {
-			if side == TransformSideLeft {
-				newListMoveIndex += 1
+			if side == TransformSideRight {
+				newListMoveIndex++
 			}
 		} else if to.Index > from.Index {
-			newListMoveIndex += 1
-		} else if to.Index == from.Index {
-			newListMoveIndex -= 1
+			newListMoveIndex++
+		} else if to.Index == otherFrom.Index {
+			newListMoveIndex--
 		}
 	}
 
-	newOp.Operator = NewListMove(newListMoveIndex)
-	return mo.Ok([]*OperationComponent{newOp}), nil
+	return newListMoveIndex
 }
 
 // TransformComponentForListMoveWithListInsert 对一个 ListMove 操作进行转换
