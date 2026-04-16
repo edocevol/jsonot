@@ -254,7 +254,7 @@ func (s *collabServer) applyOperation(op *jsonot.Operation) (string, error) {
 func newClientID() string {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		log.Printf("generate client id failed: %v", err)
+		log.Printf("failed to generate client ID: %v", err)
 		return "anonymous"
 	}
 	return hex.EncodeToString(buf[:])

@@ -39,6 +39,11 @@
       gap: 12px;
       font-size: 14px;
     }
+    .message {
+      margin-top: 12px;
+      color: #c62828;
+      min-height: 1.5em;
+    }
     code {
       background: rgba(127, 127, 127, 0.12);
       padding: 2px 6px;
@@ -59,6 +64,7 @@
       <div>版本：<code id="version">0</code></div>
       <div>状态：<code id="status">connecting</code></div>
     </div>
+    <p id="message" class="message" role="status" aria-live="polite"></p>
   </div>
 
   <div class="panel">
@@ -80,6 +86,7 @@
     const clientIdEl = document.getElementById('client-id');
     const versionEl = document.getElementById('version');
     const statusEl = document.getElementById('status');
+    const messageEl = document.getElementById('message');
 
     let version = 0;
     let lastText = '';
@@ -89,6 +96,10 @@
 
     function setStatus(text) {
       statusEl.textContent = text;
+    }
+
+    function setMessage(text) {
+      messageEl.textContent = text;
     }
 
     function setEditorState(locked) {
@@ -174,24 +185,27 @@
       if (message.type === 'init') {
         clientIdEl.textContent = message.clientId;
         updateDocument(message.document ?? '', message.version ?? 0);
+        setMessage('');
         setEditorState(false);
         return;
       }
 
       if (message.type === 'ack') {
         updateDocument(message.document ?? '', message.version ?? version);
+        setMessage('');
         setEditorState(false);
         return;
       }
 
       if (message.type === 'update') {
         updateDocument(message.document ?? '', message.version ?? version);
+        setMessage('');
         setStatus('synced');
         return;
       }
 
       if (message.type === 'error') {
-        alert(message.message || '服务器发生错误，请刷新页面重试');
+        setMessage(message.message || '服务器发生错误，请刷新页面重试');
         updateDocument(lastText, version);
         setEditorState(false);
       }
@@ -199,10 +213,12 @@
 
     socket.addEventListener('close', () => {
       editor.readOnly = true;
+      setMessage('连接已关闭，请刷新页面后重试。');
       setStatus('closed');
     });
 
     socket.addEventListener('error', () => {
+      setMessage('连接异常，请检查服务端是否可用。');
       setStatus('error');
     });
   </script>
