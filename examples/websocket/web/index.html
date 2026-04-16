@@ -191,7 +191,7 @@
       }
 
       if (message.type === 'error') {
-        alert(message.message || '发生错误');
+        alert(message.message || '服务器发生错误，请刷新页面重试');
         updateDocument(lastText, version);
         setEditorState(false);
       }

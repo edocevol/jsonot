@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -140,7 +141,11 @@ func (s *collabServer) applyClientOperation(sender *client, baseVersion int, raw
 	defer s.mu.Unlock()
 
 	if baseVersion < 0 || baseVersion > len(s.history) {
-		return serverMessage{}, serverMessage{}, errors.New("client version is out of date")
+		return serverMessage{}, serverMessage{}, fmt.Errorf(
+			"client version is invalid: expected 0-%d, got %d",
+			len(s.history),
+			baseVersion,
+		)
 	}
 
 	op, err := s.parseOperation(rawOp)
@@ -234,6 +239,7 @@ func (s *collabServer) applyOperation(op *jsonot.Operation) (string, error) {
 func newClientID() string {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
+		log.Printf("generate client id failed: %v", err)
 		return "anonymous"
 	}
 	return hex.EncodeToString(buf[:])
