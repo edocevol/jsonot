@@ -1,26 +1,26 @@
 # jsonot
 
-[简体中文](./README.zh-CN.md)
+[English](./README.md)
 
-`jsonot` is a Go library for JSON Operational Transformation (OT). It can parse JSON OT operations, apply them to JSON documents, and transform concurrent operations so they can be merged safely.
+`jsonot` 是一个 Go 语言的 JSON Operational Transformation（OT）库，用于解析 JSON OT 操作、将操作应用到 JSON 文档上，以及对并发操作进行转换。
 
-The project is inspired by [ylgrgyq/json0-rs](https://github.com/ylgrgyq/json0-rs).
+项目灵感来自 [ylgrgyq/json0-rs](https://github.com/ylgrgyq/json0-rs)。
 
-## Features
+## 功能特性
 
-- Apply JSON OT operations to objects, arrays, numbers, and text values
-- Transform concurrent operations with `Transform`
-- Compose multiple operations into a single operation
-- Build operations with the provided operation builders
-- Switch between the default Sonic backend and the AJSON backend
+- 支持对对象、数组、数字和文本值应用 JSON OT 操作
+- 支持通过 `Transform` 处理并发操作
+- 支持将多个操作组合为一个操作
+- 提供 operation builder 以便在 Go 代码中构建操作
+- 支持在默认的 Sonic 后端和 AJSON 后端之间切换
 
-## Installation
+## 安装
 
 ```bash
 go get github.com/edocevol/jsonot
 ```
 
-## Quick start
+## 快速开始
 
 ```go
 package main
@@ -55,21 +55,21 @@ func main() {
 }
 ```
 
-## Operation format
+## 操作格式
 
-Operation components are represented as JSON objects. The `p` field is the target path.
+操作组件使用 JSON 对象表示，其中 `p` 表示目标路径。
 
-### Built-in actions
+### 内置操作字段
 
-- `li`: list insert
-- `ld`: list delete
-- `lm`: list move
-- `oi`: object insert
-- `od`: object delete
-- `na`: number add subtype
-- `t` + `o`: custom subtype name and operand
+- `li`：数组插入
+- `ld`：数组删除
+- `lm`：数组移动
+- `oi`：对象插入
+- `od`：对象删除
+- `na`：数字加法子类型
+- `t` + `o`：自定义子类型名称与操作数
 
-Examples:
+示例：
 
 ```json
 {"p": ["todos", "1"], "li": {"title": "review"}}
@@ -78,7 +78,7 @@ Examples:
 {"p": ["content"], "t": "text", "o": {"p": 5, "i": " world"}}
 ```
 
-## Building operations in Go
+## 在 Go 中构建操作
 
 ```go
 ot := jsonot.NewJSONOperationTransformer()
@@ -91,28 +91,28 @@ component := factory.ObjectOperationBuilder(
 op := jsonot.NewOperation([]*jsonot.OperationComponent{component.MustGet()})
 ```
 
-## Transforming concurrent operations
+## 转换并发操作
 
-Use `Transform` when two operations were created from the same base document and need to be rebased against each other.
+当两个操作基于同一份初始文档生成，并且需要互相重放时，可以使用 `Transform`：
 
 ```go
 leftPrime, rightPrime, err := ot.Transform(context.Background(), leftOp, rightOp)
 ```
 
-After that, apply `leftPrime` after `rightOp`, or `rightPrime` after `leftOp`.
+随后可以在应用 `rightOp` 后应用 `leftPrime`，或者在应用 `leftOp` 后应用 `rightPrime`。
 
-## Value backends
+## Value 后端
 
-The library uses Sonic by default.
+库默认使用 Sonic。
 
 ```go
 jsonot.UseSonic()
 jsonot.UseAJSON()
 ```
 
-Switch the backend before creating or parsing values so all `Value` instances come from the same implementation.
+建议在创建或解析 `Value` 之前先确定后端实现，以确保参与操作的 `Value` 类型一致。
 
-## Testing
+## 测试
 
 ```bash
 go test ./...
