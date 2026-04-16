@@ -112,6 +112,10 @@ func (ot *JSONOperationTransformer) diffArray(path Path, from, to Value, operati
 }
 
 func (ot *JSONOperationTransformer) diffNumber(path Path, from, to Value, operation *Operation) error {
+	if !supportsSubtypePath(path) {
+		return ot.appendReplace(path, from, to, operation)
+	}
+
 	subTypeFunctions := ot.functions.Get(ActionSubTypeNumberAdd)
 	if subTypeFunctions.IsAbsent() {
 		return ot.appendReplace(path, from, to, operation)
@@ -122,9 +126,11 @@ func (ot *JSONOperationTransformer) diffNumber(path Path, from, to Value, operat
 		if delta == 0 {
 			return nil
 		}
+		operand := ValueFromPrimitive(delta)
+		operand.PackAny()
 		component, err := NewOperationComponent(
 			path,
-			NewSubTypeOperator(NewNumberAdd(), ValueFromPrimitive(delta), subTypeFunctions.MustGet()),
+			NewSubTypeOperator(NewNumberAdd(), operand, subTypeFunctions.MustGet()),
 		).Get()
 		if err != nil {
 			return err
@@ -137,10 +143,12 @@ func (ot *JSONOperationTransformer) diffNumber(path Path, from, to Value, operat
 	if delta == 0 {
 		return nil
 	}
+	operand := ValueFromPrimitive(delta)
+	operand.PackAny()
 
 	component, err := NewOperationComponent(
 		path,
-		NewSubTypeOperator(NewNumberAdd(), ValueFromPrimitive(delta), subTypeFunctions.MustGet()),
+		NewSubTypeOperator(NewNumberAdd(), operand, subTypeFunctions.MustGet()),
 	).Get()
 	if err != nil {
 		return err
@@ -175,4 +183,13 @@ func replaceOperator(path Path, from, to Value) Operator {
 	}
 
 	return NewListReplace(to, from)
+}
+
+func supportsSubtypePath(path Path) bool {
+	if path.IsEmpty() {
+		return true
+	}
+
+	last := path.Last()
+	return last.IsPresent() && last.MustGet().Key != ""
 }

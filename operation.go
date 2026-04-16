@@ -37,7 +37,15 @@ func (oc *OperationComponent) Format(st fmt.State, _ rune) {
 // ToValue converts the operation component to a Value.
 func (oc *OperationComponent) ToValue() Value {
 	obj := make(map[string]interface{})
-	obj["p"] = oc.Path.ToValue().RawMessage()
+	rawPath := make([]any, 0, oc.Path.Len())
+	for _, element := range oc.Path.GetElements() {
+		if element.Key != "" {
+			rawPath = append(rawPath, element.Key)
+			continue
+		}
+		rawPath = append(rawPath, element.Index)
+	}
+	obj["p"] = rawPath
 	switch op := oc.Operator.(type) {
 	case *ListDelete:
 		obj[string(ActionListDelete)] = op.OlvValue.RawMessage()

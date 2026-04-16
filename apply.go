@@ -364,7 +364,10 @@ func ApplyToObject(obj Value, paths Path, operator Operator) (Value, error) {
 		// 处理子类型操作
 		targetValue := obj.GetKey(key)
 		result := op.SubTypeFunctions.Apply(targetValue, op.Value)
-		if result.IsOk() && result.MustGet().IsPresent() {
+		if result.IsError() {
+			return nil, result.Error()
+		}
+		if result.MustGet().IsPresent() {
 			sum := result.MustGet().MustGet()
 			if err := obj.SetKey(key, sum); err != nil {
 				return nil, fmt.Errorf("failed to exec subtype update key %s: %w", key, err)
