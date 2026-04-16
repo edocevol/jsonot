@@ -11,7 +11,7 @@
 ## 运行
 
 ```bash
-cd /home/runner/work/jsonot/jsonot/examples/websocket
+cd examples/websocket
 go run .
 ```
 
