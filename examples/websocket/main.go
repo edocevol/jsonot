@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"sync"
 
 	"github.com/edocevol/jsonot"
@@ -22,9 +23,23 @@ import (
 var webFiles embed.FS
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(_ *http.Request) bool {
-		return true
+	CheckOrigin: func(r *http.Request) bool {
+		return sameOrigin(r)
 	},
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+
+	return parsed.Host == r.Host
 }
 
 type clientMessage struct {
@@ -259,7 +274,7 @@ func main() {
 	mux.Handle("/", http.FileServerFS(staticFS))
 	mux.HandleFunc("/ws", server.handleWS)
 
-	log.Printf("websocket example listening on http://127.0.0.1%s", *addr)
+	log.Printf("websocket example listening on %s", *addr)
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatal(err)
 	}
