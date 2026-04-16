@@ -37,9 +37,6 @@ func (oc *OperationComponent) Format(st fmt.State, _ rune) {
 // ToValue converts the operation component to a Value.
 func (oc *OperationComponent) ToValue() Value {
 	obj := make(map[string]interface{})
-	if oc.Path.IsEmpty() {
-		return ValueFromAny(obj)
-	}
 	obj["p"] = oc.Path.ToValue().RawMessage()
 	switch op := oc.Operator.(type) {
 	case *ListDelete:
@@ -268,11 +265,20 @@ func (oc *OperationComponent) OperatePathLen() int {
 
 // Validation validates the operation component.
 func (oc *OperationComponent) Validation() error {
-	if oc.Path.IsEmpty() {
+	if oc.Path.IsEmpty() && !supportsRootPathOperator(oc.Operator) {
 		return NewError(BadPath).Append("component path is empty")
 	}
 
 	return oc.Operator.Validates()
+}
+
+func supportsRootPathOperator(operator Operator) bool {
+	switch operator.(type) {
+	case *Noop, *ListInsert, *ListDelete, *ListReplace, *ObjectInsert, *ObjectDelete, *ObjectReplace, *SubTypeOperator:
+		return true
+	default:
+		return false
+	}
 }
 
 // NewOperation creates a new operation.
