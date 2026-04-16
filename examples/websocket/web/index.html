@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>jsonot WebSocket 协同编辑示例</title>
+  <style>
+    :root {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      max-width: 960px;
+      margin-inline: auto;
+      line-height: 1.5;
+    }
+    .panel {
+      border: 1px solid #c8c8c8;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      background: rgba(127, 127, 127, 0.08);
+    }
+    textarea {
+      width: 100%;
+      min-height: 320px;
+      resize: vertical;
+      font: 14px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #a8a8a8;
+      box-sizing: border-box;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      font-size: 14px;
+    }
+    code {
+      background: rgba(127, 127, 127, 0.12);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+    ul {
+      padding-left: 20px;
+      margin-bottom: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>jsonot + WebSocket 文档协同编辑</h1>
+    <p>打开两个浏览器窗口，连接同一个服务后在文本框中输入内容，即可看到基于 <code>jsonot</code> 的简单协同编辑效果。</p>
+    <div class="meta">
+      <div>客户端：<code id="client-id">-</code></div>
+      <div>版本：<code id="version">0</code></div>
+      <div>状态：<code id="status">connecting</code></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label for="editor">共享文档</label>
+    <textarea id="editor" placeholder="等待连接建立..." spellcheck="false"></textarea>
+  </div>
+
+  <div class="panel">
+    <strong>交互说明</strong>
+    <ul>
+      <li>前端会把一次连续文本修改转换成 <code>jsonot</code> text subtype 操作并发给后端。</li>
+      <li>后端使用 <code>jsonot.Transform</code> 处理并发操作，再用 <code>jsonot.Apply</code> 更新共享文档。</li>
+      <li>示例为了保持逻辑简单，单个客户端在收到服务端确认前会暂时锁定输入。</li>
+    </ul>
+  </div>
+
+  <script>
+    const editor = document.getElementById('editor');
+    const clientIdEl = document.getElementById('client-id');
+    const versionEl = document.getElementById('version');
+    const statusEl = document.getElementById('status');
+
+    let version = 0;
+    let lastText = '';
+    let waitingAck = false;
+
+    const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function setEditorState(locked) {
+      waitingAck = locked;
+      editor.readOnly = locked;
+      setStatus(locked ? 'waiting-ack' : 'ready');
+    }
+
+    function updateDocument(nextText, nextVersion) {
+      version = nextVersion;
+      lastText = nextText;
+      editor.value = nextText;
+      versionEl.textContent = String(nextVersion);
+    }
+
+    function buildOperation(prevText, nextText) {
+      if (prevText === nextText) {
+        return null;
+      }
+
+      let start = 0;
+      while (start < prevText.length && start < nextText.length && prevText[start] === nextText[start]) {
+        start += 1;
+      }
+
+      let prevEnd = prevText.length - 1;
+      let nextEnd = nextText.length - 1;
+      while (prevEnd >= start && nextEnd >= start && prevText[prevEnd] === nextText[nextEnd]) {
+        prevEnd -= 1;
+        nextEnd -= 1;
+      }
+
+      const removed = prevText.slice(start, prevEnd + 1);
+      const inserted = nextText.slice(start, nextEnd + 1);
+      const operation = [];
+
+      if (removed.length > 0) {
+        operation.push({
+          p: ['content'],
+          t: 'text',
+          o: { p: start, d: removed },
+        });
+      }
+
+      if (inserted.length > 0) {
+        operation.push({
+          p: ['content'],
+          t: 'text',
+          o: { p: start, i: inserted },
+        });
+      }
+
+      return operation.length > 0 ? operation : null;
+    }
+
+    editor.addEventListener('beforeinput', (event) => {
+      if (waitingAck) {
+        event.preventDefault();
+      }
+    });
+
+    editor.addEventListener('input', () => {
+      const operation = buildOperation(lastText, editor.value);
+      if (!operation) {
+        return;
+      }
+
+      setEditorState(true);
+      socket.send(JSON.stringify({
+        type: 'op',
+        version,
+        op: operation,
+      }));
+    });
+
+    socket.addEventListener('open', () => {
+      setStatus('connected');
+      editor.placeholder = '开始输入文本';
+    });
+
+    socket.addEventListener('message', (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === 'init') {
+        clientIdEl.textContent = message.clientId;
+        updateDocument(message.document ?? '', message.version ?? 0);
+        setEditorState(false);
+        return;
+      }
+
+      if (message.type === 'ack') {
+        updateDocument(message.document ?? '', message.version ?? version);
+        setEditorState(false);
+        return;
+      }
+
+      if (message.type === 'update') {
+        updateDocument(message.document ?? '', message.version ?? version);
+        setStatus('synced');
+        return;
+      }
+
+      if (message.type === 'error') {
+        alert(message.message || '发生错误');
+        updateDocument(lastText, version);
+        setEditorState(false);
+      }
+    });
+
+    socket.addEventListener('close', () => {
+      editor.readOnly = true;
+      setStatus('closed');
+    });
+
+    socket.addEventListener('error', () => {
+      setStatus('error');
+    });
+  </script>
+</body>
+</html>
