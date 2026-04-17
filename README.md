@@ -11,6 +11,7 @@ The project is inspired by [ylgrgyq/json0-rs](https://github.com/ylgrgyq/json0-r
 - Apply JSON OT operations to objects, arrays, numbers, and text values
 - Transform concurrent operations with `Transform`
 - Compose multiple operations into a single operation
+- Generate diff/revert operations from two JSON documents with `Diff`
 - Build operations with the provided operation builders
 - Switch between the default Sonic backend and the AJSON backend
 
@@ -100,6 +101,20 @@ leftPrime, rightPrime, err := ot.Transform(context.Background(), leftOp, rightOp
 ```
 
 After that, apply `leftPrime` after `rightOp`, or `rightPrime` after `leftOp`.
+
+## Generating revert operations from two versions
+
+Use `Diff` to generate JSON OT that transforms one document into another.
+
+```go
+current, _ := jsonot.UnmarshalValue([]byte(`{"version":2,"items":[1,2,3]}`))
+previous, _ := jsonot.UnmarshalValue([]byte(`{"version":1,"items":[1,3]}`))
+
+revertOp := ot.Diff(context.Background(), current, previous)
+restored := ot.Apply(context.Background(), current, revertOp.MustGet())
+```
+
+This is useful for version comparison and restore flows. When a structure changes too much, `Diff` falls back to replacing that subtree, including the root document when needed.
 
 ## Value backends
 

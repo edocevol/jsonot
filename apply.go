@@ -212,6 +212,37 @@ func ApplyToValue(val Value, paths Path, operator Operator) error {
 	}
 }
 
+// ApplyToRootValue applies an operator directly on the root value.
+func ApplyToRootValue(val Value, operator Operator) (Value, error) {
+	switch op := operator.(type) {
+	case *Noop:
+		return val, nil
+	case *ListInsert:
+		return op.NewValue, nil
+	case *ListDelete:
+		return ValueFromAny(nil), nil
+	case *ListReplace:
+		return op.NewValue, nil
+	case *ObjectInsert:
+		return op.NewValue, nil
+	case *ObjectDelete:
+		return ValueFromAny(nil), nil
+	case *ObjectReplace:
+		return op.NewValue, nil
+	case *SubTypeOperator:
+		result := op.SubTypeFunctions.Apply(mo.Some(val), op.Value)
+		if result.IsError() {
+			return nil, result.Error()
+		}
+		if result.MustGet().IsAbsent() {
+			return ValueFromAny(nil), nil
+		}
+		return result.MustGet().MustGet(), nil
+	default:
+		return nil, fmt.Errorf("apply failed: unsupported root operator type: %T", operator)
+	}
+}
+
 // ApplyToArray 将操作应用到值上
 func ApplyToArray(arr []Value, paths Path, operator Operator) ([]Value, error) {
 	indexOption := paths.FirstIndexPath()
@@ -333,7 +364,10 @@ func ApplyToObject(obj Value, paths Path, operator Operator) (Value, error) {
 		// 处理子类型操作
 		targetValue := obj.GetKey(key)
 		result := op.SubTypeFunctions.Apply(targetValue, op.Value)
-		if result.IsOk() && result.MustGet().IsPresent() {
+		if result.IsError() {
+			return nil, result.Error()
+		}
+		if result.MustGet().IsPresent() {
 			sum := result.MustGet().MustGet()
 			if err := obj.SetKey(key, sum); err != nil {
 				return nil, fmt.Errorf("failed to exec subtype update key %s: %w", key, err)

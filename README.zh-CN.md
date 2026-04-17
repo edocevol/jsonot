@@ -11,6 +11,7 @@
 - 支持对对象、数组、数字和文本值应用 JSON OT 操作
 - 支持通过 `Transform` 处理并发操作
 - 支持将多个操作组合为一个操作
+- 支持通过 `Diff` 基于两个 JSON 文档生成 diff / revert 操作
 - 提供 operation builder 以便在 Go 代码中构建操作
 - 支持在默认的 Sonic 后端和 AJSON 后端之间切换
 
@@ -100,6 +101,20 @@ leftPrime, rightPrime, err := ot.Transform(context.Background(), leftOp, rightOp
 ```
 
 随后可以在应用 `rightOp` 后应用 `leftPrime`，或者在应用 `leftOp` 后应用 `rightPrime`。
+
+## 基于两个版本生成恢复操作
+
+可以使用 `Diff` 生成将一个文档恢复到另一个版本的 JSON OT。
+
+```go
+current, _ := jsonot.UnmarshalValue([]byte(`{"version":2,"items":[1,2,3]}`))
+previous, _ := jsonot.UnmarshalValue([]byte(`{"version":1,"items":[1,3]}`))
+
+revertOp := ot.Diff(context.Background(), current, previous)
+restored := ot.Apply(context.Background(), current, revertOp.MustGet())
+```
+
+这个能力适合做版本对比和恢复。对于变更较大的结构，`Diff` 会直接替换对应子树；必要时也支持替换整个根文档。
 
 ## Value 后端
 

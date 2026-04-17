@@ -136,15 +136,20 @@ func (ot *JSONOperationTransformer) Apply(
 	}
 
 	value.PackAny()
+	resultValue := value
 	var err error
 	for k := range components {
-		err = ApplyToValue(value, components[k].Path, components[k].Operator)
+		if components[k].Path.IsEmpty() {
+			resultValue, err = ApplyToRootValue(resultValue, components[k].Operator)
+		} else {
+			err = ApplyToValue(resultValue, components[k].Path, components[k].Operator)
+		}
 		if err != nil {
 			return mo.Err[Value](err)
 		}
 	}
 
-	return mo.Ok(value)
+	return mo.Ok(resultValue)
 }
 
 // Applies 将多个操作应用到给定的 JSON 节点上
