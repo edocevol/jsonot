@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>jsonot + BlockNote 协同编辑 Demo</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mantine/core@7/styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@blocknote/core@latest/fonts/inter.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@blocknote/mantine@latest/style.css">
+  <style>
+    :root {
+      --bg-a: #fdf7ef;
+      --bg-b: #f3ebe2;
+      --ink: #1f2328;
+      --muted: #5f6368;
+      --line: rgba(31, 35, 40, 0.16);
+      --accent: #1c7d6d;
+      --danger: #b3261e;
+      --panel: rgba(255, 255, 255, 0.9);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 10%, rgba(28, 125, 109, 0.1), transparent 40%),
+        radial-gradient(circle at 90% 0%, rgba(198, 115, 44, 0.14), transparent 30%),
+        linear-gradient(135deg, var(--bg-a), var(--bg-b));
+      font-family: "Inter", "Noto Sans SC", sans-serif;
+      min-height: 100vh;
+    }
+
+    .shell {
+      width: min(1100px, calc(100% - 24px));
+      margin: 22px auto;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(42, 45, 52, 0.08);
+    }
+
+    .meta {
+      padding: 16px;
+    }
+
+    .meta h1 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      line-height: 1.2;
+      letter-spacing: 0.01em;
+    }
+
+    .meta p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 92px 1fr;
+      row-gap: 8px;
+      column-gap: 8px;
+      font-size: 13px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--line);
+    }
+
+    .key { color: var(--muted); }
+
+    .value {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      overflow-wrap: anywhere;
+    }
+
+    .status-ready { color: var(--accent); }
+    .status-error { color: var(--danger); }
+
+    .tips {
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.45;
+      padding-top: 12px;
+      border-top: 1px dashed var(--line);
+    }
+
+    .editor-wrap {
+      padding: 10px;
+      min-height: 72vh;
+    }
+
+    .editor-shell {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+      min-height: calc(72vh - 20px);
+    }
+
+    #msg {
+      margin-top: 8px;
+      min-height: 20px;
+      font-size: 13px;
+      color: var(--danger);
+    }
+
+    @media (max-width: 920px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .editor-wrap {
+        min-height: 66vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script type="module">
+    import React, { useEffect, useMemo, useRef, useState } from "https://esm.sh/react@18.2.0";
+    import { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
+    import { useCreateBlockNote } from "https://esm.sh/@blocknote/react@latest?deps=react@18.2.0,react-dom@18.2.0";
+    import { BlockNoteView } from "https://esm.sh/@blocknote/mantine@latest?deps=react@18.2.0,react-dom@18.2.0";
+
+    function App() {
+      const [clientId, setClientId] = useState("-");
+      const [version, setVersion] = useState(0);
+      const [status, setStatus] = useState("connecting");
+      const [message, setMessage] = useState("");
+
+      const socketRef = useRef(null);
+      const inflightRef = useRef(false);
+      const queuedDocRef = useRef(null);
+      const ignoreLocalChangeRef = useRef(false);
+      const serverDocRef = useRef(null);
+      const sentDocRef = useRef(null);
+      const deferredUpdateRef = useRef(null);
+      const versionRef = useRef(0);
+
+      const initialContent = useMemo(() => ([
+        { type: "paragraph", content: "正在连接协同服务..." },
+      ]), []);
+
+      const editor = useCreateBlockNote({ initialContent });
+
+      function setVersionState(nextVersion) {
+        versionRef.current = nextVersion;
+        setVersion(nextVersion);
+      }
+
+      function normalizeDoc(raw) {
+        if (!raw || typeof raw !== "object") {
+          return null;
+        }
+        if (!Array.isArray(raw.blocks) || raw.blocks.length === 0) {
+          return null;
+        }
+        return { blocks: raw.blocks };
+      }
+
+      function docsEqual(left, right) {
+        if (!left || !right) {
+          return false;
+        }
+        return JSON.stringify(left) === JSON.stringify(right);
+      }
+
+      function applyServerDocument(nextDoc, nextVersion) {
+        const normalized = normalizeDoc(nextDoc);
+        if (!normalized) {
+          return;
+        }
+
+        serverDocRef.current = normalized;
+        setVersionState(nextVersion);
+
+        ignoreLocalChangeRef.current = true;
+        editor.replaceBlocks(editor.document, normalized.blocks);
+        setTimeout(() => {
+          ignoreLocalChangeRef.current = false;
+        }, 0);
+      }
+
+      function sendSync(documentPayload) {
+        const socket = socketRef.current;
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        inflightRef.current = true;
+        sentDocRef.current = documentPayload;
+        socket.send(JSON.stringify({
+          type: "sync",
+          version: versionRef.current,
+          document: documentPayload,
+        }));
+        setStatus("syncing");
+      }
+
+      function flushQueueIfPossible() {
+        if (inflightRef.current || !queuedDocRef.current) {
+          return;
+        }
+
+        const nextDoc = queuedDocRef.current;
+        queuedDocRef.current = null;
+        sendSync(nextDoc);
+      }
+
+      useEffect(() => {
+        const protocol = location.protocol === "https:" ? "wss" : "ws";
+        const socket = new WebSocket(`${protocol}://${location.host}/ws`);
+        socketRef.current = socket;
+
+        socket.addEventListener("open", () => {
+          setStatus("connected");
+          setMessage("");
+        });
+
+        socket.addEventListener("message", (event) => {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "init") {
+            const normalized = normalizeDoc(data.document);
+            setClientId(data.clientId || "-");
+            setStatus("ready");
+            setMessage("");
+            if (normalized) {
+              applyServerDocument(normalized, data.version ?? 0);
+            }
+            return;
+          }
+
+          if (data.type === "ack") {
+            inflightRef.current = false;
+
+            const nextVersion = typeof data.version === "number" ? data.version : versionRef.current;
+            setVersionState(nextVersion);
+
+            if (!queuedDocRef.current) {
+              const normalized = normalizeDoc(data.document);
+              // 只有服务端返回的内容与我们发出的内容不同时，才需要 replaceBlocks
+              // （说明发生了并发变换，服务端做了 transform）
+              if (normalized && !docsEqual(normalized, sentDocRef.current)) {
+                applyServerDocument(normalized, nextVersion);
+              } else if (normalized) {
+                // 内容一致，只更新 serverDocRef，不触发 replaceBlocks
+                serverDocRef.current = normalized;
+              }
+            }
+
+            if (deferredUpdateRef.current && !queuedDocRef.current) {
+              const pending = deferredUpdateRef.current;
+              deferredUpdateRef.current = null;
+              if ((pending.version ?? 0) > versionRef.current) {
+                applyServerDocument(pending.document, pending.version);
+              }
+            }
+
+            setStatus("ready");
+            setMessage("");
+            flushQueueIfPossible();
+            return;
+          }
+
+          if (data.type === "update") {
+            if (inflightRef.current || queuedDocRef.current) {
+              deferredUpdateRef.current = data;
+              return;
+            }
+
+            const nextVersion = typeof data.version === "number" ? data.version : versionRef.current;
+            applyServerDocument(data.document, nextVersion);
+            setStatus("synced");
+            setMessage("");
+            return;
+          }
+
+          if (data.type === "error") {
+            inflightRef.current = false;
+            setStatus("error");
+            setMessage(data.message || "服务器处理失败");
+            return;
+          }
+        });
+
+        socket.addEventListener("close", () => {
+          setStatus("closed");
+          setMessage("连接已关闭，请刷新页面重连。");
+        });
+
+        socket.addEventListener("error", () => {
+          setStatus("error");
+          setMessage("连接异常，请检查服务端是否运行。");
+        });
+
+        return () => {
+          socket.close();
+        };
+      }, [editor]);
+
+      const statusClass = status === "error" || status === "closed" ? "status-error" : "status-ready";
+
+      return React.createElement(
+        "div",
+        { className: "shell" },
+        React.createElement(
+          "aside",
+          { className: "card meta" },
+          React.createElement("h1", null, "BlockNote 协同编辑"),
+          React.createElement(
+            "p",
+            null,
+            "本页把 BlockNote 文档作为 JSON 快照发送到服务端，由 jsonot 计算 Diff、处理并发 Transform，再广播合并结果。"
+          ),
+          React.createElement(
+            "div",
+            { className: "kv" },
+            React.createElement("div", { className: "key" }, "clientId"),
+            React.createElement("div", { className: "value" }, clientId),
+            React.createElement("div", { className: "key" }, "version"),
+            React.createElement("div", { className: "value" }, String(version)),
+            React.createElement("div", { className: "key" }, "status"),
+            React.createElement("div", { className: `value ${statusClass}` }, status)
+          ),
+          React.createElement("div", { id: "msg" }, message),
+          React.createElement(
+            "div",
+            { className: "tips" },
+            "打开两个窗口同时编辑可观察并发合并。该示例采用“快照 + OT”策略：客户端发送完整 blocks，服务端生成 OT 并做重基。"
+          )
+        ),
+        React.createElement(
+          "main",
+          { className: "card editor-wrap" },
+          React.createElement(
+            "div",
+            { className: "editor-shell" },
+            React.createElement(BlockNoteView, {
+              editor,
+              onChange: () => {
+                if (ignoreLocalChangeRef.current) {
+                  return;
+                }
+
+                const nextDoc = { blocks: editor.document };
+                if (docsEqual(nextDoc, serverDocRef.current)) {
+                  return;
+                }
+
+                if (inflightRef.current) {
+                  queuedDocRef.current = nextDoc;
+                  return;
+                }
+
+                sendSync(nextDoc);
+              }
+            })
+          )
+        )
+      );
+    }
+
+    const root = createRoot(document.getElementById("app"));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>
