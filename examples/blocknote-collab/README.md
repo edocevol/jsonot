@@ -1,26 +1,31 @@
-# BlockNote 协同编辑 Demo（jsonot）
+# BlockNote collaboration demo with jsonot
 
-这个示例把 [BlockNote](https://github.com/TypeCellOS/BlockNote) 作为富文本 block 编辑器，
-并使用 `jsonot` 在服务端完成 OT 并发合并。
+This example turns [BlockNote](https://github.com/TypeCellOS/BlockNote) into a **rich text collaboration backend** powered by `jsonot`.
 
-## 能力说明
+It shows a practical pattern for editors that do not emit OT directly: the client sends snapshots, and the server uses `Diff`, `Transform`, and `Apply` to merge them.
 
-- BlockNote 富文本块编辑
-- WebSocket 实时同步
-- 客户端发送文档快照（`{ blocks: [...] }`）
-- 服务端对快照执行：
-  - `Diff(baseSnapshot, clientSnapshot)` 生成 OT
-  - `Transform(clientOp, concurrentOps)` 处理并发
-  - `Apply(currentDoc, transformedOp)` 更新权威文档
-- 广播最新版本文档给其他客户端
+## Who is this demo for?
 
-## 目录
+Use this demo when you want to learn:
 
-- `main.go`：Go WebSocket 协同后端
-- `web/index.html`：React + BlockNote 前端（ESM CDN）
-- `go.mod`：独立示例模块
+- how to build rich text collaboration in Go
+- how to integrate `jsonot` with editors that send document snapshots
+- how to run server-authoritative merging for structured block documents
 
-## 运行
+## What will you see after running it?
+
+- a BlockNote editor in the browser
+- multiple clients editing the same block document
+- server-side diff generation and concurrent rebase
+- synchronized document versions across windows
+
+## Directory
+
+- `main.go`: Go WebSocket collaboration backend
+- `web/index.html`: React + BlockNote frontend (ESM CDN)
+- `go.mod`: standalone example module
+
+## Run
 
 ```bash
 cd examples/blocknote-collab
@@ -28,17 +33,33 @@ go mod tidy
 go run .
 ```
 
-默认地址：`http://127.0.0.1:8080`
+Default address: `http://127.0.0.1:8080`
 
-## 使用
+## How it works
 
-1. 打开 `http://127.0.0.1:8080`
-2. 再开一个浏览器窗口访问同一地址
-3. 在两个窗口同时编辑，观察版本号与内容同步
+1. open `http://127.0.0.1:8080`
+2. open the same page in another browser window
+3. edit the document in both windows
+4. each client sends a `{ blocks: [...] }` snapshot
+5. the server runs:
+   - `Diff(baseSnapshot, clientSnapshot)` to generate OT
+   - `Transform(clientOp, concurrentOps)` to rebase it
+   - `Apply(currentDoc, transformedOp)` to update the authoritative document
+6. the server broadcasts the latest version to other clients
 
-## 协议
+## Architecture at a glance
 
-客户端发送：
+```mermaid
+flowchart LR
+    Client[BlockNote client snapshot] --> Diff[Diff base vs client snapshot]
+    Diff --> Transform[Transform against concurrent ops]
+    Transform --> Apply[Apply transformed op to current doc]
+    Apply --> Broadcast[Broadcast latest versioned document]
+```
+
+## Protocol
+
+Client message:
 
 ```json
 {
@@ -52,15 +73,30 @@ go run .
 }
 ```
 
-服务端消息：
+Server messages:
 
-- `init`：初始化客户端、文档和版本
-- `ack`：确认当前客户端提交
-- `update`：广播给其他客户端
-- `error`：同步失败
+- `init`: initial client, document, and version
+- `ack`: confirms the submitting client
+- `update`: broadcast for other clients
+- `error`: sync failure
 
-## 注意事项
+## Why this demo matters
 
-- 为了让 `Diff` 结果稳定，服务端要求 `document.blocks` 是非空数组。
-- 该示例采用“快照上行，OT 内核合并”的模式，便于接入复杂编辑器。
-- 生产环境建议补充：鉴权、房间隔离、持久化、断线重连与光标协同。
+This is the clearest repository example if you are evaluating:
+
+- rich text collaboration backends in Go
+- snapshot-to-OT merge pipelines
+- how to connect `jsonot` to complex editors without writing editor-specific OT on the client
+
+## Notes
+
+- for stable `Diff` output, the server expects `document.blocks` to be a non-empty array
+- this example uses a “snapshot up, OT merge on the server” model that is practical for complex editors
+- production systems should add auth, rooms, persistence, reconnect flows, and cursor collaboration
+
+## Related docs
+
+- [Root README](../../README.md)
+- [How to build collaborative editing in Go with JSON OT](../../docs/go-json-ot-collaboration.md)
+- [How to use jsonot for JSON diff / revert](../../docs/json-diff-revert.md)
+- [WebSocket collaboration demo](../websocket/README.md)
