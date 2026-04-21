@@ -1,61 +1,121 @@
 # jsonot/sharedb
 
-`jsonot/sharedb` 提供一个轻量级的、ShareDB 风格的协同编辑后端抽象，基于 `jsonot` 的 OT 能力实现：
+`jsonot/sharedb` is a lightweight, ShareDB-style collaboration backend abstraction built on top of `jsonot`.
 
-- 文档快照与版本号
-- 客户端按版本提交操作（`Submit`）
-- 服务端自动 rebase 并发操作（`Transform`）
-- 订阅成功提交事件（`Subscribe`）
+If you are searching for a **ShareDB alternative in Go**, a **Go collaboration backend**, or a **server-authoritative OT store**, this package is the best starting point in the repository.
 
-当前实现是内存版 `Store`，适合 demo、单机服务和二次封装。
+## What problem does this package solve?
 
-## 安装
+It gives you the backend building blocks that usually sit around an OT engine:
 
-```bash
-go get github.com/edocevol/jsonot/sharedb
-```
+- document snapshots and versions
+- client submit by base version (`Submit`)
+- server-side rebase of concurrent operations with `Transform`
+- subscription to committed updates (`Subscribe`)
 
-## 快速开始
+The current implementation includes an in-memory `Store`, which is a good fit for demos, single-node services, prototypes, and custom wrappers.
+
+## Who should use it?
+
+Use `jsonot/sharedb` when you want to:
+
+- build a ShareDB-style backend in Go
+- keep the document authoritative on the server
+- accept client operations against an older version and rebase them automatically
+- wrap OT logic with a small backend API instead of designing every primitive from scratch
+
+## Quick start
 
 ```go
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
+"context"
+"encoding/json"
+"fmt"
 
-	"github.com/edocevol/jsonot/sharedb"
+"github.com/edocevol/jsonot/sharedb"
 )
 
 func main() {
-	ctx := context.Background()
-	store := sharedb.NewStore()
+ctx := context.Background()
+store := sharedb.NewStore()
 
-	_, _ = store.CreateDocument(ctx, "doc-1", json.RawMessage(`{"counter":0}`))
+_, _ = store.CreateDocument(ctx, "doc-1", json.RawMessage(`{"counter":0}`))
 
-	result, _ := store.Submit(
-		ctx,
-		"doc-1",
-		0,
-		json.RawMessage(`[{"p":["counter"],"na":1}]`),
-		"client-a",
-	)
+result, _ := store.Submit(
+ctx,
+"doc-1",
+0,
+json.RawMessage(`[{"p":["counter"],"na":1}]`),
+"client-a",
+)
 
-	fmt.Println(result.Version)        // 1
-	fmt.Println(string(result.Document)) // {"counter":1}
+fmt.Println(result.Version)          // 1
+fmt.Println(string(result.Document)) // {"counter":1}
 }
+```
+
+## Request flow
+
+```mermaid
+flowchart LR
+    Client[Client op with base version] --> Submit[Submit]
+    Submit --> Check[Load latest snapshot and history]
+    Check --> Rebase[Transform against missing ops when needed]
+    Rebase --> Apply[Apply transformed op]
+    Apply --> Persist[Store snapshot and version]
+    Persist --> Broadcast[Subscribe listeners receive commit event]
 ```
 
 ## API
 
-- `CreateDocument(ctx, documentID, initial)`：创建文档，初始版本为 `0`
-- `GetSnapshot(ctx, documentID)`：获取最新快照
-- `Submit(ctx, documentID, baseVersion, operation, source)`：提交并发操作
-- `Subscribe(ctx, documentID, buffer)`：订阅提交成功事件
+- `CreateDocument(ctx, documentID, initial)`: create a document at version `0`
+- `GetSnapshot(ctx, documentID)`: get the latest snapshot
+- `Submit(ctx, documentID, baseVersion, operation, source)`: submit an operation
+- `Subscribe(ctx, documentID, buffer)`: subscribe to commit events
 
-## 说明
+## How this relates to ShareDB
 
-- `Submit` 要求 `baseVersion` 在 `[0, currentVersion]` 范围内。
-- 当 `baseVersion < currentVersion` 时，服务端会把操作与缺失区间的历史操作做 OT 转换。
-- 订阅事件采用非阻塞投递，慢消费者可能丢事件；如需严格投递可在上层做持久队列。
+`jsonot/sharedb` is not a full ShareDB clone. It focuses on the backend primitives that are most useful when building your own Go collaboration service:
+
+- snapshot + version management
+- submit by version
+- OT rebase on the server
+- event subscription
+
+That makes it a good choice when you want ShareDB-style ideas with a smaller, Go-native surface area.
+
+## Smallest runnable path
+
+1. `go get github.com/edocevol/jsonot/sharedb`
+2. create a document with `CreateDocument`
+3. submit an operation with `Submit`
+4. read snapshots or subscribe to committed updates
+
+## FAQ
+
+### Is this a ShareDB alternative in Go?
+
+It can be, if your goal is to build a Go-native backend with ShareDB-style concepts rather than to adopt the full ShareDB feature set.
+
+### Does the server rebase old client operations?
+
+Yes. When `baseVersion < currentVersion`, the server transforms the submitted operation against missing history before applying it.
+
+### Can I use this in production?
+
+The in-memory store is primarily aimed at demos and small services. For production, you will usually add persistence, isolation, auth, and operational controls on top.
+
+## Notes
+
+- `Submit` requires `baseVersion` to be in `[0, currentVersion]`
+- when `baseVersion < currentVersion`, the server transforms the submitted operation against the missing history range
+- subscription delivery is non-blocking; slow consumers may drop events unless you add a durable queue upstream
+
+## Related docs
+
+- [Root README](../README.md)
+- [What is jsonot?](../docs/what-is-jsonot.md)
+- [How to build collaborative editing in Go with JSON OT](../docs/go-json-ot-collaboration.md)
+- [WebSocket collaboration demo](../examples/websocket/README.md)
