@@ -61,6 +61,17 @@ func (b *MemoryBackend) GetDoc(_ context.Context, docID string) (DocRecord, erro
 	}, nil
 }
 
+func (b *MemoryBackend) DeleteDoc(_ context.Context, docID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if _, ok := b.docs[docID]; !ok {
+		return ErrDocumentNotFound
+	}
+	delete(b.docs, docID)
+	return nil
+}
+
 func (b *MemoryBackend) SaveDoc(_ context.Context, record DocRecord) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

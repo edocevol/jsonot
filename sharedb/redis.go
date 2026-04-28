@@ -112,6 +112,23 @@ func (b *RedisBackend) GetDoc(ctx context.Context, docID string) (DocRecord, err
 	}, nil
 }
 
+func (b *RedisBackend) DeleteDoc(ctx context.Context, docID string) error {
+	script := redis.NewScript(`
+if redis.call("EXISTS", KEYS[1]) == 0 then
+    return 0
+end
+redis.call("DEL", KEYS[1], KEYS[2])
+return 1`)
+	deleted, err := script.Run(ctx, b.rdb, []string{redisSnapKey(docID), redisOpsKey(docID)}).Int()
+	if err != nil {
+		return err
+	}
+	if deleted == 0 {
+		return ErrDocumentNotFound
+	}
+	return nil
+}
+
 func (b *RedisBackend) SaveDoc(ctx context.Context, record DocRecord) error {
 	snapKey := redisSnapKey(record.DocumentID)
 	return b.rdb.HSet(ctx, snapKey,

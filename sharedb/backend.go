@@ -48,6 +48,10 @@ type Backend interface {
 	// Returns ErrDocumentNotFound when the document does not exist.
 	GetDoc(ctx context.Context, docID string) (DocRecord, error)
 
+	// DeleteDoc removes the latest snapshot for docID.
+	// Returns ErrDocumentNotFound when the document does not exist.
+	DeleteDoc(ctx context.Context, docID string) error
+
 	// SaveDoc persists an updated snapshot. Called after every successful op.
 	SaveDoc(ctx context.Context, record DocRecord) error
 

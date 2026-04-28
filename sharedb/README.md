@@ -9,6 +9,7 @@ If you are searching for a **ShareDB alternative in Go**, a **Go collaboration b
 It gives you the backend building blocks that usually sit around an OT engine:
 
 - document snapshots and versions
+- document lifecycle events (`op`, `delete`)
 - atomic snapshot + op-log commits
 - client submit by base version (`Submit`)
 - server-side rebase of concurrent operations with `Transform`
@@ -74,6 +75,7 @@ flowchart LR
 ## API
 
 - `CreateDocument(ctx, documentID, initial)`: create a document at version `0`
+- `DeleteDocument(ctx, documentID, baseVersion, source)`: delete an existing document after exact version validation and notify subscribers
 - `GetSnapshot(ctx, documentID)`: get the latest snapshot
 - `Submit(ctx, documentID, baseVersion, operation, source)`: submit an operation
 - `SubmitWithRequest(ctx, req)`: submit an operation with optional `OpID` / `Source` + `Sequence` idempotency metadata
@@ -85,6 +87,7 @@ flowchart LR
 `jsonot/sharedb` is not a full ShareDB clone. It focuses on the backend primitives that are most useful when building your own Go collaboration service:
 
 - snapshot + version management
+- document deletion with subscriber lifecycle events
 - atomic snapshot + operation history persistence
 - submit by version
 - OT rebase on the server
@@ -126,6 +129,7 @@ The in-memory store is primarily aimed at demos and small services. For producti
 ## Notes
 
 - `Submit` requires `baseVersion` to be in `[0, currentVersion]`
+- `DeleteDocument` requires `baseVersion == currentVersion`; stale deletes fail with `ErrInvalidVersion`
 - `SubmitWithRequest` deduplicates only when an operation identity is supplied via `OpID` or both `Source` and a positive `Sequence`
 - `GetOperations` returns ops whose produced versions are in `(fromVersion, toVersion]`; each `OpRecord` includes `BaseVersion`, original `SubmittedOp`, transformed committed `Op`, and operation identity
 - successful non-empty submits use `Backend.CommitOp` so the snapshot version and op log advance together
