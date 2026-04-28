@@ -84,16 +84,22 @@ func (b *MemoryBackend) AppendOp(_ context.Context, record OpRecord) error {
 		return ErrDocumentNotFound
 	}
 
-	d.ops = append(d.ops, OpRecord{
-		DocumentID:  record.DocumentID,
-		Version:     record.Version,
-		BaseVersion: record.BaseVersion,
-		ID:          record.ID,
-		Source:      record.Source,
-		Sequence:    record.Sequence,
-		SubmittedOp: append(json.RawMessage(nil), record.SubmittedOp...),
-		Op:          append(json.RawMessage(nil), record.Op...),
-	})
+	d.ops = append(d.ops, cloneOpRecord(record))
+	return nil
+}
+
+func (b *MemoryBackend) CommitOp(_ context.Context, doc DocRecord, op OpRecord) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	d, ok := b.docs[doc.DocumentID]
+	if !ok {
+		return ErrDocumentNotFound
+	}
+
+	d.version = doc.Version
+	d.doc = append(json.RawMessage(nil), doc.Doc...)
+	d.ops = append(d.ops, cloneOpRecord(op))
 	return nil
 }
 
@@ -120,18 +126,22 @@ func (b *MemoryBackend) GetOps(_ context.Context, docID string, fromVersion, toV
 	slice := d.ops[fromVersion:toVersion]
 	result := make([]OpRecord, len(slice))
 	for i, rec := range slice {
-		result[i] = OpRecord{
-			DocumentID:  rec.DocumentID,
-			Version:     rec.Version,
-			BaseVersion: rec.BaseVersion,
-			ID:          rec.ID,
-			Source:      rec.Source,
-			Sequence:    rec.Sequence,
-			SubmittedOp: append(json.RawMessage(nil), rec.SubmittedOp...),
-			Op:          append(json.RawMessage(nil), rec.Op...),
-		}
+		result[i] = cloneOpRecord(rec)
 	}
 	return result, nil
+}
+
+func cloneOpRecord(record OpRecord) OpRecord {
+	return OpRecord{
+		DocumentID:  record.DocumentID,
+		Version:     record.Version,
+		BaseVersion: record.BaseVersion,
+		ID:          record.ID,
+		Source:      record.Source,
+		Sequence:    record.Sequence,
+		SubmittedOp: append(json.RawMessage(nil), record.SubmittedOp...),
+		Op:          append(json.RawMessage(nil), record.Op...),
+	}
 }
 
 // ─── MemoryLocker ──────────────────────────────────────────────────────────────

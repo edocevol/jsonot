@@ -3,6 +3,7 @@ package sharedb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,6 +19,54 @@ func sameJSON(t *testing.T, got, want json.RawMessage) bool {
 		t.Fatalf("want invalid JSON %q: %v", want, err)
 	}
 	return reflect.DeepEqual(gotValue, wantValue)
+}
+
+func TestSubmitDoesNotAdvanceSnapshotWhenCommitFails(t *testing.T) {
+	ctx := context.Background()
+	backend := &failingAppendBackend{MemoryBackend: NewMemoryBackend(), err: errors.New("append failed")}
+	store := NewServer(backend, NewMemoryLocker())
+
+	_, err := store.CreateDocument(ctx, "doc-atomic", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	_, err = store.Submit(ctx, "doc-atomic", 0, json.RawMessage(`[{"p":["counter"],"na":1}]`), "client-a")
+	if err == nil {
+		t.Fatalf("expected submit to fail")
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-atomic")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	if snapshot.Version != 0 {
+		t.Fatalf("snapshot version advanced despite failed commit: got %d want 0", snapshot.Version)
+	}
+	if got := string(snapshot.Document); got != `{"counter":0}` {
+		t.Fatalf("snapshot document changed despite failed commit: got %s", got)
+	}
+
+	ops, err := store.GetOperations(ctx, "doc-atomic", 0, 0)
+	if err != nil {
+		t.Fatalf("get operations failed: %v", err)
+	}
+	if len(ops) != 0 {
+		t.Fatalf("unexpected committed ops after failed commit: got %d", len(ops))
+	}
+}
+
+type failingAppendBackend struct {
+	*MemoryBackend
+	err error
+}
+
+func (b *failingAppendBackend) AppendOp(context.Context, OpRecord) error {
+	return b.err
+}
+
+func (b *failingAppendBackend) CommitOp(context.Context, DocRecord, OpRecord) error {
+	return b.err
 }
 
 func TestStoreSequentialAndRebasedSubmit(t *testing.T) {

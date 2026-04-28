@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,6 +126,33 @@ func (b *RedisBackend) AppendOp(ctx context.Context, record OpRecord) error {
 		return err
 	}
 	return b.rdb.RPush(ctx, redisOpsKey(record.DocumentID), raw).Err()
+}
+
+func (b *RedisBackend) CommitOp(ctx context.Context, doc DocRecord, op OpRecord) error {
+	raw, err := json.Marshal(op)
+	if err != nil {
+		return err
+	}
+
+	script := redis.NewScript(`
+local snapType = redis.call("TYPE", KEYS[1]).ok
+if snapType ~= "hash" then
+    return redis.error_reply("sharedb: document not found")
+end
+local opsType = redis.call("TYPE", KEYS[2]).ok
+if opsType ~= "none" and opsType ~= "list" then
+    return redis.error_reply("sharedb redis: ops key has wrong type")
+end
+redis.call("HSET", KEYS[1], "version", ARGV[1], "doc", ARGV[2])
+redis.call("RPUSH", KEYS[2], ARGV[3])
+return 1`)
+	if err := script.Run(ctx, b.rdb, []string{redisSnapKey(doc.DocumentID), redisOpsKey(op.DocumentID)}, doc.Version, string(doc.Doc), string(raw)).Err(); err != nil {
+		if strings.Contains(err.Error(), ErrDocumentNotFound.Error()) {
+			return ErrDocumentNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 // GetOps returns ops in (fromVersion, toVersion], i.e. op records whose
