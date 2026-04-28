@@ -3,8 +3,22 @@ package sharedb
 import (
 	"context"
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 )
+
+func sameJSON(t *testing.T, got, want json.RawMessage) bool {
+	t.Helper()
+	var gotValue, wantValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatalf("got invalid JSON %q: %v", got, err)
+	}
+	if err := json.Unmarshal(want, &wantValue); err != nil {
+		t.Fatalf("want invalid JSON %q: %v", want, err)
+	}
+	return reflect.DeepEqual(gotValue, wantValue)
+}
 
 func TestStoreSequentialAndRebasedSubmit(t *testing.T) {
 	ctx := context.Background()
@@ -102,5 +116,224 @@ func TestStoreInvalidVersion(t *testing.T) {
 	_, err = store.Submit(ctx, "doc-3", 5, json.RawMessage(`[]`), "")
 	if err == nil {
 		t.Fatalf("expected invalid version error")
+	}
+}
+
+func TestStoreGetOperationsReturnsCommittedHistoryRange(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	_, err := store.CreateDocument(ctx, "doc-history", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	first := json.RawMessage(`[{"p":["counter"],"na":1}]`)
+	second := json.RawMessage(`[{"p":["counter"],"na":2}]`)
+	third := json.RawMessage(`[{"p":["counter"],"na":3}]`)
+
+	if _, err := store.SubmitWithRequest(ctx, SubmitRequest{DocumentID: "doc-history", BaseVersion: 0, Operation: first, Source: "a", Sequence: 1}); err != nil {
+		t.Fatalf("submit first failed: %v", err)
+	}
+	if _, err := store.SubmitWithRequest(ctx, SubmitRequest{DocumentID: "doc-history", BaseVersion: 1, Operation: second, Source: "b", Sequence: 2}); err != nil {
+		t.Fatalf("submit second failed: %v", err)
+	}
+	if _, err := store.SubmitWithRequest(ctx, SubmitRequest{DocumentID: "doc-history", BaseVersion: 2, Operation: third, Source: "c", Sequence: 3}); err != nil {
+		t.Fatalf("submit third failed: %v", err)
+	}
+
+	ops, err := store.GetOperations(ctx, "doc-history", 1, 3)
+	if err != nil {
+		t.Fatalf("get operations failed: %v", err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("unexpected operation count: got %d want 2", len(ops))
+	}
+	if ops[0].Version != 2 || ops[0].BaseVersion != 1 || ops[0].Source != "b" || ops[0].ID.Source != "b" || ops[0].ID.Sequence != 2 || !sameJSON(t, ops[0].Op, second) || !sameJSON(t, ops[0].SubmittedOp, second) {
+		t.Fatalf("unexpected first history op: %+v", ops[0])
+	}
+	if ops[1].Version != 3 || ops[1].BaseVersion != 2 || ops[1].Source != "c" || ops[1].ID.Source != "c" || ops[1].ID.Sequence != 3 || !sameJSON(t, ops[1].Op, third) || !sameJSON(t, ops[1].SubmittedOp, third) {
+		t.Fatalf("unexpected second history op: %+v", ops[1])
+	}
+}
+
+func TestSubmitWithRequestDeduplicatesClientSequence(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	_, err := store.CreateDocument(ctx, "doc-dedupe", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	req := SubmitRequest{
+		DocumentID:  "doc-dedupe",
+		BaseVersion: 0,
+		Operation:   json.RawMessage(`[{"p":["counter"],"na":1}]`),
+		Source:      "client-a",
+		Sequence:    7,
+	}
+
+	first, err := store.SubmitWithRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("first submit failed: %v", err)
+	}
+	if first.Version != 1 || first.Duplicate {
+		t.Fatalf("unexpected first result: %+v", first)
+	}
+
+	if _, err := store.Submit(ctx, "doc-dedupe", 1, json.RawMessage(`[{"p":["counter"],"na":2}]`), "client-b"); err != nil {
+		t.Fatalf("interleaved submit failed: %v", err)
+	}
+
+	retry, err := store.SubmitWithRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("retry submit failed: %v", err)
+	}
+	if retry.Version != 2 || !retry.Duplicate {
+		t.Fatalf("unexpected retry result: %+v", retry)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-dedupe")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	if got := string(snapshot.Document); got != `{"counter":3}` {
+		t.Fatalf("duplicate submit should not apply twice: got %s", got)
+	}
+	if !sameJSON(t, retry.Document, snapshot.Document) {
+		t.Fatalf("duplicate result should return the current snapshot document")
+	}
+}
+
+func TestSubmitWithRequestRejectsSequenceReuseWithDifferentOperation(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	_, err := store.CreateDocument(ctx, "doc-seq-conflict", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	first := SubmitRequest{
+		DocumentID:  "doc-seq-conflict",
+		BaseVersion: 0,
+		Operation:   json.RawMessage(`[{"p":["counter"],"na":1}]`),
+		Source:      "client-a",
+		Sequence:    7,
+	}
+	if _, err := store.SubmitWithRequest(ctx, first); err != nil {
+		t.Fatalf("first submit failed: %v", err)
+	}
+
+	conflict := first
+	conflict.Operation = json.RawMessage(`[{"p":["counter"],"na":2}]`)
+	_, err = store.SubmitWithRequest(ctx, conflict)
+	if err == nil {
+		t.Fatalf("expected sequence conflict error")
+	}
+}
+
+func TestSubmitWithRequestPublishesSequence(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	_, err := store.CreateDocument(ctx, "doc-event-seq", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	events, cancel, err := store.Subscribe(ctx, "doc-event-seq", 1)
+	if err != nil {
+		t.Fatalf("subscribe failed: %v", err)
+	}
+	defer cancel()
+
+	_, err = store.SubmitWithRequest(ctx, SubmitRequest{
+		DocumentID:  "doc-event-seq",
+		BaseVersion: 0,
+		Operation:   json.RawMessage(`[{"p":["counter"],"na":1}]`),
+		Source:      "client-a",
+		Sequence:    42,
+	})
+	if err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+
+	select {
+	case event := <-events:
+		if event.Source != "client-a" || event.Sequence != 42 || event.ID.Source != "client-a" || event.ID.Sequence != 42 {
+			t.Fatalf("unexpected event identity: %+v", event)
+		}
+	default:
+		t.Fatalf("expected one event")
+	}
+}
+
+func TestGetOperationsRejectsInvalidRanges(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+	_, err := store.CreateDocument(ctx, "doc-invalid-range", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	if _, err := store.Submit(ctx, "doc-invalid-range", 0, json.RawMessage(`[{"p":["counter"],"na":1}]`), "client-a"); err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+
+	cases := []struct{ from, to int }{{-1, 0}, {1, 0}, {0, 2}}
+	for _, tc := range cases {
+		if _, err := store.GetOperations(ctx, "doc-invalid-range", tc.from, tc.to); err == nil {
+			t.Fatalf("expected invalid range error for [%d,%d]", tc.from, tc.to)
+		}
+	}
+
+	ops, err := store.GetOperations(ctx, "doc-invalid-range", 1, 1)
+	if err != nil {
+		t.Fatalf("empty range should be valid: %v", err)
+	}
+	if len(ops) != 0 {
+		t.Fatalf("empty range returned %d ops", len(ops))
+	}
+}
+
+func TestIdentityOmittedFromJSONWhenUnset(t *testing.T) {
+	eventRaw, err := json.Marshal(Event{DocumentID: "doc", Version: 1, Operation: json.RawMessage(`[]`), Document: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("marshal event failed: %v", err)
+	}
+	if strings.Contains(string(eventRaw), `"id"`) || strings.Contains(string(eventRaw), `"seq"`) || strings.Contains(string(eventRaw), `"source"`) {
+		t.Fatalf("unset event identity should be omitted, got %s", eventRaw)
+	}
+
+	recordRaw, err := json.Marshal(OpRecord{DocumentID: "doc", Version: 1, Op: json.RawMessage(`[]`)})
+	if err != nil {
+		t.Fatalf("marshal op record failed: %v", err)
+	}
+	if strings.Contains(string(recordRaw), `"id"`) || strings.Contains(string(recordRaw), `"seq"`) || strings.Contains(string(recordRaw), `"source"`) {
+		t.Fatalf("unset op identity should be omitted, got %s", recordRaw)
+	}
+}
+
+func TestMemoryPublisherDeliversIndependentEventPayloads(t *testing.T) {
+	ctx := context.Background()
+	pub := NewMemoryPublisher()
+	left, cancelLeft, err := pub.Subscribe(ctx, "doc-pub", 1)
+	if err != nil {
+		t.Fatalf("subscribe left failed: %v", err)
+	}
+	defer cancelLeft()
+	right, cancelRight, err := pub.Subscribe(ctx, "doc-pub", 1)
+	if err != nil {
+		t.Fatalf("subscribe right failed: %v", err)
+	}
+	defer cancelRight()
+
+	pub.Publish(ctx, Event{DocumentID: "doc-pub", Version: 1, Operation: json.RawMessage(`[{"p":["x"],"na":1}]`), Document: json.RawMessage(`{"x":1}`)})
+	leftEvent := <-left
+	leftEvent.Operation[0] = 'X'
+	leftEvent.Document[0] = 'X'
+	rightEvent := <-right
+	if string(rightEvent.Operation) != `[{"p":["x"],"na":1}]` || string(rightEvent.Document) != `{"x":1}` {
+		t.Fatalf("subscriber payloads should be independent, got op=%s doc=%s", rightEvent.Operation, rightEvent.Document)
 	}
 }
