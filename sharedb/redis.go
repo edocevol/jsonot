@@ -292,7 +292,7 @@ func (p *RedisPublisher) listen() {
 				continue
 			}
 			select {
-			case s.ch <- event:
+			case s.ch <- cloneEvent(event):
 			default:
 			}
 		}

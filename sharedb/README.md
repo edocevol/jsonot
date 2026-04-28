@@ -13,7 +13,7 @@ It gives you the backend building blocks that usually sit around an OT engine:
 - server-side rebase of concurrent operations with `Transform`
 - subscription to committed updates (`Subscribe`)
 
-The current implementation includes an in-memory `Store`, which is a good fit for demos, single-node services, prototypes, and custom wrappers.
+The current implementation includes an in-memory server for demos/tests plus pluggable backends, lockers, and publishers (including Redis adapters) for multi-process deployments.
 
 ## Who should use it?
 
@@ -23,6 +23,8 @@ Use `jsonot/sharedb` when you want to:
 - keep the document authoritative on the server
 - accept client operations against an older version and rebase them automatically
 - wrap OT logic with a small backend API instead of designing every primitive from scratch
+- expose operation history for reconnect/catch-up flows
+- make client retries idempotent with `source` + `seq` / `OpID` metadata
 
 ## Quick start
 
@@ -39,11 +41,11 @@ import (
 
 func main() {
 ctx := context.Background()
-store := sharedb.NewStore()
+server := sharedb.NewMemoryServer()
 
-_, _ = store.CreateDocument(ctx, "doc-1", json.RawMessage(`{"counter":0}`))
+_, _ = server.CreateDocument(ctx, "doc-1", json.RawMessage(`{"counter":0}`))
 
-result, _ := store.Submit(
+result, _ := server.Submit(
 ctx,
 "doc-1",
 0,
@@ -73,6 +75,8 @@ flowchart LR
 - `CreateDocument(ctx, documentID, initial)`: create a document at version `0`
 - `GetSnapshot(ctx, documentID)`: get the latest snapshot
 - `Submit(ctx, documentID, baseVersion, operation, source)`: submit an operation
+- `SubmitWithRequest(ctx, req)`: submit an operation with optional `OpID` / `Source` + `Sequence` idempotency metadata
+- `GetOperations(ctx, documentID, fromVersion, toVersion)`: fetch committed operation history for versions `(fromVersion, toVersion]`
 - `Subscribe(ctx, documentID, buffer)`: subscribe to commit events
 
 ## How this relates to ShareDB
@@ -82,6 +86,8 @@ flowchart LR
 - snapshot + version management
 - submit by version
 - OT rebase on the server
+- operation history retrieval for reconnect/catch-up
+- idempotent client retries with `OpID` (`source` + `seq`)
 - event subscription
 
 That makes it a good choice when you want ShareDB-style ideas with a smaller, Go-native surface area.
@@ -91,7 +97,7 @@ That makes it a good choice when you want ShareDB-style ideas with a smaller, Go
 1. `go get github.com/edocevol/jsonot/sharedb`
 2. create a document with `CreateDocument`
 3. submit an operation with `Submit`
-4. read snapshots or subscribe to committed updates
+4. use `GetOperations` to catch up missed versions after reconnects, or `Subscribe` for live committed updates
 
 ## FAQ
 
@@ -103,6 +109,14 @@ It can be, if your goal is to build a Go-native backend with ShareDB-style conce
 
 Yes. When `baseVersion < currentVersion`, the server transforms the submitted operation against missing history before applying it.
 
+### How should clients retry after a lost acknowledgement?
+
+Use `SubmitWithRequest` and set a stable `OpID` (or the compatibility `Source` and monotonically increasing `Sequence` fields). If the same operation identity is submitted again with the same operation, the server returns `Duplicate: true`, returns the current snapshot, and does not apply the operation a second time. Reusing the same sequence for a different operation returns `ErrDuplicateSequenceConflict`.
+
+### How does a reconnecting client catch up?
+
+Call `GetSnapshot` to learn the current version, or call `GetOperations(ctx, docID, lastSeenVersion, currentVersion)` to fetch the committed ops that produced versions `(lastSeenVersion, currentVersion]`.
+
 ### Can I use this in production?
 
 The in-memory store is primarily aimed at demos and small services. For production, you will usually add persistence, isolation, auth, and operational controls on top.
@@ -110,6 +124,8 @@ The in-memory store is primarily aimed at demos and small services. For producti
 ## Notes
 
 - `Submit` requires `baseVersion` to be in `[0, currentVersion]`
+- `SubmitWithRequest` deduplicates only when an operation identity is supplied via `OpID` or both `Source` and a positive `Sequence`
+- `GetOperations` returns ops whose produced versions are in `(fromVersion, toVersion]`; each `OpRecord` includes `BaseVersion`, original `SubmittedOp`, transformed committed `Op`, and operation identity
 - when `baseVersion < currentVersion`, the server transforms the submitted operation against the missing history range
 - subscription delivery is non-blocking; slow consumers may drop events unless you add a durable queue upstream
 

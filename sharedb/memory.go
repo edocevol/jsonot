@@ -84,7 +84,16 @@ func (b *MemoryBackend) AppendOp(_ context.Context, record OpRecord) error {
 		return ErrDocumentNotFound
 	}
 
-	d.ops = append(d.ops, record)
+	d.ops = append(d.ops, OpRecord{
+		DocumentID:  record.DocumentID,
+		Version:     record.Version,
+		BaseVersion: record.BaseVersion,
+		ID:          record.ID,
+		Source:      record.Source,
+		Sequence:    record.Sequence,
+		SubmittedOp: append(json.RawMessage(nil), record.SubmittedOp...),
+		Op:          append(json.RawMessage(nil), record.Op...),
+	})
 	return nil
 }
 
@@ -110,7 +119,18 @@ func (b *MemoryBackend) GetOps(_ context.Context, docID string, fromVersion, toV
 
 	slice := d.ops[fromVersion:toVersion]
 	result := make([]OpRecord, len(slice))
-	copy(result, slice)
+	for i, rec := range slice {
+		result[i] = OpRecord{
+			DocumentID:  rec.DocumentID,
+			Version:     rec.Version,
+			BaseVersion: rec.BaseVersion,
+			ID:          rec.ID,
+			Source:      rec.Source,
+			Sequence:    rec.Sequence,
+			SubmittedOp: append(json.RawMessage(nil), rec.SubmittedOp...),
+			Op:          append(json.RawMessage(nil), rec.Op...),
+		}
+	}
 	return result, nil
 }
 
@@ -173,7 +193,7 @@ func (p *MemoryPublisher) Publish(_ context.Context, event Event) {
 			continue
 		}
 		select {
-		case sub.ch <- event:
+		case sub.ch <- cloneEvent(event):
 		default:
 			// slow subscriber — drop event
 		}

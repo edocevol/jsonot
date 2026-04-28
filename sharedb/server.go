@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/edocevol/jsonot"
 )
@@ -16,6 +17,8 @@ var (
 	ErrDocumentExists = errors.New("sharedb: document already exists")
 	// ErrInvalidVersion means the supplied base version is out of range.
 	ErrInvalidVersion = errors.New("sharedb: invalid version")
+	// ErrDuplicateSequenceConflict means a client reused Source+Sequence for a different operation.
+	ErrDuplicateSequenceConflict = errors.New("sharedb: duplicate source sequence conflicts with original operation")
 )
 
 // Snapshot is the latest immutable view of a document.
@@ -29,9 +32,24 @@ type Snapshot struct {
 type Event struct {
 	DocumentID string          `json:"documentId"`
 	Version    int             `json:"version"`
-	Source     string          `json:"source,omitempty"`
+	ID         OpID            `json:"id,omitempty"`
+	Source     string          `json:"source,omitempty"` // deprecated: use ID.Source
+	Sequence   int             `json:"seq,omitempty"`    // deprecated: use ID.Sequence
 	Operation  json.RawMessage `json:"op"`
 	Document   json.RawMessage `json:"document"`
+}
+
+// SubmitRequest is the structured form of a client operation submission.
+// Source+Sequence are optional, but when both are supplied the server treats
+// retries of the same client sequence as idempotent and returns the already
+// committed result without applying the operation again.
+type SubmitRequest struct {
+	DocumentID  string          `json:"documentId"`
+	BaseVersion int             `json:"baseVersion"`
+	Operation   json.RawMessage `json:"op"`
+	ID          OpID            `json:"id,omitempty"`
+	Source      string          `json:"source,omitempty"` // deprecated: use ID.Source
+	Sequence    int             `json:"seq,omitempty"`    // deprecated: use ID.Sequence
 }
 
 // SubmitResult is returned by Server.Submit.
@@ -41,6 +59,9 @@ type SubmitResult struct {
 	// Rebased is true when the op was transformed against concurrent ops
 	// before being applied (i.e. baseVersion < server version at submit time).
 	Rebased bool `json:"rebased"`
+	// Duplicate is true when SubmitWithRequest detected a retry for the same
+	// Source+Sequence and did not apply the operation again.
+	Duplicate bool `json:"duplicate,omitempty"`
 	// Operation is the (possibly transformed) op that was actually applied.
 	Operation json.RawMessage `json:"op"`
 	// Document is the document state after the op.
@@ -146,24 +167,58 @@ func (s *Server) Submit(
 	rawOperation json.RawMessage,
 	source string,
 ) (SubmitResult, error) {
+	return s.SubmitWithRequest(ctx, SubmitRequest{
+		DocumentID:  documentID,
+		BaseVersion: baseVersion,
+		Operation:   rawOperation,
+		Source:      source,
+	})
+}
+
+// SubmitWithRequest accepts a structured client operation submission. In
+// addition to Submit's versioned rebase semantics, Source+Sequence provide
+// ShareDB-style idempotency for clients that retry after transport failures.
+func (s *Server) SubmitWithRequest(ctx context.Context, req SubmitRequest) (SubmitResult, error) {
+	opID := req.opID()
 	// Step 1: acquire lock
-	unlock, err := s.locker.Lock(ctx, documentID)
+	unlock, err := s.locker.Lock(ctx, req.DocumentID)
 	if err != nil {
 		return SubmitResult{}, err
 	}
 	defer unlock()
 
 	// Step 2: read current state
-	rec, err := s.backend.GetDoc(ctx, documentID)
+	rec, err := s.backend.GetDoc(ctx, req.DocumentID)
 	if err != nil {
 		return SubmitResult{}, err
 	}
 
-	if baseVersion < 0 || baseVersion > rec.Version {
-		return SubmitResult{}, fmt.Errorf("%w: expected 0-%d, got %d", ErrInvalidVersion, rec.Version, baseVersion)
+	if req.BaseVersion < 0 || req.BaseVersion > rec.Version {
+		return SubmitResult{}, fmt.Errorf("%w: expected 0-%d, got %d", ErrInvalidVersion, rec.Version, req.BaseVersion)
 	}
 
-	op, err := s.parseOperation(rawOperation)
+	if opID.Source != "" && opID.Sequence > 0 && rec.Version > 0 {
+		ops, err := s.backend.GetOps(ctx, req.DocumentID, 0, rec.Version)
+		if err != nil {
+			return SubmitResult{}, err
+		}
+		for _, opRec := range ops {
+			recID := opRec.opID()
+			if recID.Source == opID.Source && recID.Sequence == opID.Sequence {
+				if len(opRec.SubmittedOp) > 0 && !jsonRawEqual(req.Operation, opRec.SubmittedOp) {
+					return SubmitResult{}, ErrDuplicateSequenceConflict
+				}
+				return SubmitResult{
+					Version:   rec.Version,
+					Duplicate: true,
+					Operation: append(json.RawMessage(nil), opRec.Op...),
+					Document:  append(json.RawMessage(nil), rec.Doc...),
+				}, nil
+			}
+		}
+	}
+
+	op, err := s.parseOperation(req.Operation)
 	if err != nil {
 		return SubmitResult{}, err
 	}
@@ -171,8 +226,8 @@ func (s *Server) Submit(
 	// Step 3: transform against concurrent ops
 	transformed := op
 	rebased := false
-	if baseVersion < rec.Version {
-		concurrentOps, err := s.backend.GetOps(ctx, documentID, baseVersion, rec.Version)
+	if req.BaseVersion < rec.Version {
+		concurrentOps, err := s.backend.GetOps(ctx, req.DocumentID, req.BaseVersion, rec.Version)
 		if err != nil {
 			return SubmitResult{}, err
 		}
@@ -216,17 +271,21 @@ func (s *Server) Submit(
 
 	// Step 5: persist snapshot + op log
 	if err := s.backend.SaveDoc(ctx, DocRecord{
-		DocumentID: documentID,
+		DocumentID: req.DocumentID,
 		Version:    newVersion,
 		Doc:        newDoc,
 	}); err != nil {
 		return SubmitResult{}, err
 	}
 	if err := s.backend.AppendOp(ctx, OpRecord{
-		DocumentID: documentID,
-		Version:    newVersion,
-		Source:     source,
-		Op:         serializedOp,
+		DocumentID:  req.DocumentID,
+		Version:     newVersion,
+		BaseVersion: req.BaseVersion,
+		ID:          opID,
+		Source:      opID.Source,
+		Sequence:    opID.Sequence,
+		SubmittedOp: append(json.RawMessage(nil), req.Operation...),
+		Op:          serializedOp,
 	}); err != nil {
 		return SubmitResult{}, err
 	}
@@ -240,9 +299,11 @@ func (s *Server) Submit(
 
 	// Step 6: publish event (lock already released via defer, but publish while we have data)
 	s.pub.Publish(ctx, Event{
-		DocumentID: documentID,
+		DocumentID: req.DocumentID,
 		Version:    newVersion,
-		Source:     source,
+		ID:         opID,
+		Source:     opID.Source,
+		Sequence:   opID.Sequence,
 		Operation:  append(json.RawMessage(nil), serializedOp...),
 		Document:   append(json.RawMessage(nil), newDoc...),
 	})
@@ -259,6 +320,125 @@ func (s *Server) Subscribe(ctx context.Context, documentID string, buffer int) (
 		return nil, nil, err
 	}
 	return s.pub.Subscribe(ctx, documentID, buffer)
+}
+
+// GetOperations returns committed operation records that produced versions in
+// [fromVersion+1, toVersion]. It is useful for client catch-up, audit logs, and
+// reconnect flows that need ShareDB-style op history.
+func (s *Server) GetOperations(ctx context.Context, documentID string, fromVersion, toVersion int) ([]OpRecord, error) {
+	rec, err := s.backend.GetDoc(ctx, documentID)
+	if err != nil {
+		return nil, err
+	}
+	if fromVersion < 0 || toVersion < fromVersion || toVersion > rec.Version {
+		return nil, fmt.Errorf("%w: expected 0-%d range, got [%d, %d]", ErrInvalidVersion, rec.Version, fromVersion, toVersion)
+	}
+	ops, err := s.backend.GetOps(ctx, documentID, fromVersion, toVersion)
+	if err != nil {
+		return nil, err
+	}
+	if len(ops) != toVersion-fromVersion {
+		return nil, fmt.Errorf("sharedb: incomplete operation history for %s: got %d ops, want %d", documentID, len(ops), toVersion-fromVersion)
+	}
+	return ops, nil
+}
+
+func (r SubmitRequest) opID() OpID {
+	id := r.ID
+	if id.Source == "" {
+		id.Source = r.Source
+	}
+	if id.Sequence == 0 {
+		id.Sequence = r.Sequence
+	}
+	return id
+}
+
+func (r OpRecord) opID() OpID {
+	id := r.ID
+	if id.Source == "" {
+		id.Source = r.Source
+	}
+	if id.Sequence == 0 {
+		id.Sequence = r.Sequence
+	}
+	return id
+}
+
+func jsonRawEqual(a, b json.RawMessage) bool {
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
+}
+
+func cloneEvent(event Event) Event {
+	cloned := event
+	cloned.Operation = append(json.RawMessage(nil), event.Operation...)
+	cloned.Document = append(json.RawMessage(nil), event.Document...)
+	return cloned
+}
+
+func (id OpID) isZero() bool {
+	return id.Source == "" && id.Sequence == 0
+}
+
+func (e Event) MarshalJSON() ([]byte, error) {
+	type eventJSON struct {
+		DocumentID string          `json:"documentId"`
+		Version    int             `json:"version"`
+		ID         *OpID           `json:"id,omitempty"`
+		Source     string          `json:"source,omitempty"`
+		Sequence   int             `json:"seq,omitempty"`
+		Operation  json.RawMessage `json:"op"`
+		Document   json.RawMessage `json:"document"`
+	}
+	var id *OpID
+	if !e.ID.isZero() {
+		idValue := e.ID
+		id = &idValue
+	}
+	return json.Marshal(eventJSON{
+		DocumentID: e.DocumentID,
+		Version:    e.Version,
+		ID:         id,
+		Source:     e.Source,
+		Sequence:   e.Sequence,
+		Operation:  e.Operation,
+		Document:   e.Document,
+	})
+}
+
+func (r OpRecord) MarshalJSON() ([]byte, error) {
+	type opRecordJSON struct {
+		DocumentID  string          `json:"documentId"`
+		Version     int             `json:"version"`
+		BaseVersion int             `json:"baseVersion"`
+		ID          *OpID           `json:"id,omitempty"`
+		Source      string          `json:"source,omitempty"`
+		Sequence    int             `json:"seq,omitempty"`
+		SubmittedOp json.RawMessage `json:"submittedOp,omitempty"`
+		Op          json.RawMessage `json:"op"`
+	}
+	var id *OpID
+	if !r.ID.isZero() {
+		idValue := r.ID
+		id = &idValue
+	}
+	return json.Marshal(opRecordJSON{
+		DocumentID:  r.DocumentID,
+		Version:     r.Version,
+		BaseVersion: r.BaseVersion,
+		ID:          id,
+		Source:      r.Source,
+		Sequence:    r.Sequence,
+		SubmittedOp: r.SubmittedOp,
+		Op:          r.Op,
+	})
 }
 
 func (s *Server) parseOperation(raw json.RawMessage) (*jsonot.Operation, error) {

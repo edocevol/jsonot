@@ -5,6 +5,14 @@ import (
 	"encoding/json"
 )
 
+// OpID identifies a client operation. It is similar to ShareDB's source+seq
+// pair and CRDT actor+sequence IDs: Source names the client/session and
+// Sequence is monotonically increasing within that source.
+type OpID struct {
+	Source   string `json:"source,omitempty"`
+	Sequence int    `json:"seq,omitempty"`
+}
+
 // DocRecord holds the latest document snapshot stored in the backend.
 type DocRecord struct {
 	DocumentID string          `json:"documentId"`
@@ -14,10 +22,14 @@ type DocRecord struct {
 
 // OpRecord holds one committed operation entry in the op log.
 type OpRecord struct {
-	DocumentID string          `json:"documentId"`
-	Version    int             `json:"version"` // version this op produced (1-based)
-	Source     string          `json:"source,omitempty"`
-	Op         json.RawMessage `json:"op"`
+	DocumentID  string          `json:"documentId"`
+	Version     int             `json:"version"`     // version this op produced (1-based)
+	BaseVersion int             `json:"baseVersion"` // client version this op was based on before transform
+	ID          OpID            `json:"id,omitempty"`
+	Source      string          `json:"source,omitempty"`      // deprecated: use ID.Source
+	Sequence    int             `json:"seq,omitempty"`         // deprecated: use ID.Sequence
+	SubmittedOp json.RawMessage `json:"submittedOp,omitempty"` // original client op before transform
+	Op          json.RawMessage `json:"op"`
 }
 
 // Backend abstracts all durable storage for documents and op history.
