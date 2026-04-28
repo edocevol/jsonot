@@ -139,6 +139,9 @@ func TestStoreSubscribe(t *testing.T) {
 		if event.DocumentID != "doc-2" {
 			t.Fatalf("unexpected document id: %s", event.DocumentID)
 		}
+		if event.Type != EventTypeOp {
+			t.Fatalf("unexpected event type: got %q want %q", event.Type, EventTypeOp)
+		}
 		if event.Version != 1 {
 			t.Fatalf("unexpected version: got %d want 1", event.Version)
 		}
@@ -165,6 +168,68 @@ func TestStoreInvalidVersion(t *testing.T) {
 	_, err = store.Submit(ctx, "doc-3", 5, json.RawMessage(`[]`), "")
 	if err == nil {
 		t.Fatalf("expected invalid version error")
+	}
+}
+
+func TestDeleteDocumentRemovesSnapshotAndPublishesDelete(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	_, err := store.CreateDocument(ctx, "doc-delete", json.RawMessage(`{"title":"bye"}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	events, cancel, err := store.Subscribe(ctx, "doc-delete", 1)
+	if err != nil {
+		t.Fatalf("subscribe failed: %v", err)
+	}
+	defer cancel()
+
+	if err := store.DeleteDocument(ctx, "doc-delete", 0, "client-a"); err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+	if _, err := store.GetSnapshot(ctx, "doc-delete"); !errors.Is(err, ErrDocumentNotFound) {
+		t.Fatalf("expected document not found after delete, got %v", err)
+	}
+	if _, _, err := store.Subscribe(ctx, "doc-delete", 1); !errors.Is(err, ErrDocumentNotFound) {
+		t.Fatalf("expected subscribe on deleted doc to fail with not found, got %v", err)
+	}
+
+	select {
+	case event := <-events:
+		if event.Type != EventTypeDelete {
+			t.Fatalf("unexpected event type: got %q want %q", event.Type, EventTypeDelete)
+		}
+		if event.DocumentID != "doc-delete" || event.Version != 0 || event.Source != "client-a" {
+			t.Fatalf("unexpected delete event: %+v", event)
+		}
+	default:
+		t.Fatalf("expected delete event")
+	}
+}
+
+func TestDeleteDocumentRejectsStaleVersion(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	_, err := store.CreateDocument(ctx, "doc-delete-version", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	if _, err := store.Submit(ctx, "doc-delete-version", 0, json.RawMessage(`[{"p":["counter"],"na":1}]`), "client-a"); err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+
+	err = store.DeleteDocument(ctx, "doc-delete-version", 0, "client-a")
+	if !errors.Is(err, ErrInvalidVersion) {
+		t.Fatalf("expected invalid version error, got %v", err)
+	}
+	snapshot, err := store.GetSnapshot(ctx, "doc-delete-version")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	if snapshot.Version != 1 {
+		t.Fatalf("stale delete changed snapshot version: got %d", snapshot.Version)
 	}
 }
 

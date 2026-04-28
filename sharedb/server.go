@@ -28,8 +28,18 @@ type Snapshot struct {
 	Document   json.RawMessage `json:"document"`
 }
 
+// EventType classifies lifecycle and operation events sent to subscribers.
+type EventType string
+
+const (
+	EventTypeCreate EventType = "create"
+	EventTypeOp     EventType = "op"
+	EventTypeDelete EventType = "delete"
+)
+
 // Event describes one operation that was accepted and committed.
 type Event struct {
+	Type       EventType       `json:"type,omitempty"`
 	DocumentID string          `json:"documentId"`
 	Version    int             `json:"version"`
 	ID         OpID            `json:"id,omitempty"`
@@ -296,6 +306,7 @@ func (s *Server) SubmitWithRequest(ctx context.Context, req SubmitRequest) (Subm
 
 	// Step 6: publish event (lock already released via defer, but publish while we have data)
 	s.pub.Publish(ctx, Event{
+		Type:       EventTypeOp,
 		DocumentID: req.DocumentID,
 		Version:    newVersion,
 		ID:         opID,
@@ -317,6 +328,36 @@ func (s *Server) Subscribe(ctx context.Context, documentID string, buffer int) (
 		return nil, nil, err
 	}
 	return s.pub.Subscribe(ctx, documentID, buffer)
+}
+
+// DeleteDocument removes a document snapshot after validating that baseVersion
+// matches the latest server version. Existing subscribers receive a delete event.
+func (s *Server) DeleteDocument(ctx context.Context, documentID string, baseVersion int, source string) error {
+	unlock, err := s.locker.Lock(ctx, documentID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	rec, err := s.backend.GetDoc(ctx, documentID)
+	if err != nil {
+		return err
+	}
+	if baseVersion != rec.Version {
+		return fmt.Errorf("%w: expected %d, got %d", ErrInvalidVersion, rec.Version, baseVersion)
+	}
+	if err := s.backend.DeleteDoc(ctx, documentID); err != nil {
+		return err
+	}
+
+	s.pub.Publish(ctx, Event{
+		Type:       EventTypeDelete,
+		DocumentID: documentID,
+		Version:    rec.Version,
+		Source:     source,
+		Document:   append(json.RawMessage(nil), rec.Doc...),
+	})
+	return nil
 }
 
 // GetOperations returns committed operation records that produced versions in
@@ -386,6 +427,7 @@ func (id OpID) isZero() bool {
 
 func (e Event) MarshalJSON() ([]byte, error) {
 	type eventJSON struct {
+		Type       EventType       `json:"type,omitempty"`
 		DocumentID string          `json:"documentId"`
 		Version    int             `json:"version"`
 		ID         *OpID           `json:"id,omitempty"`
@@ -400,6 +442,7 @@ func (e Event) MarshalJSON() ([]byte, error) {
 		id = &idValue
 	}
 	return json.Marshal(eventJSON{
+		Type:       e.Type,
 		DocumentID: e.DocumentID,
 		Version:    e.Version,
 		ID:         id,
