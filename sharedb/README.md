@@ -9,6 +9,7 @@ If you are searching for a **ShareDB alternative in Go**, a **Go collaboration b
 It gives you the backend building blocks that usually sit around an OT engine:
 
 - document snapshots and versions
+- atomic snapshot + op-log commits
 - client submit by base version (`Submit`)
 - server-side rebase of concurrent operations with `Transform`
 - subscription to committed updates (`Subscribe`)
@@ -84,6 +85,7 @@ flowchart LR
 `jsonot/sharedb` is not a full ShareDB clone. It focuses on the backend primitives that are most useful when building your own Go collaboration service:
 
 - snapshot + version management
+- atomic snapshot + operation history persistence
 - submit by version
 - OT rebase on the server
 - operation history retrieval for reconnect/catch-up
@@ -126,6 +128,7 @@ The in-memory store is primarily aimed at demos and small services. For producti
 - `Submit` requires `baseVersion` to be in `[0, currentVersion]`
 - `SubmitWithRequest` deduplicates only when an operation identity is supplied via `OpID` or both `Source` and a positive `Sequence`
 - `GetOperations` returns ops whose produced versions are in `(fromVersion, toVersion]`; each `OpRecord` includes `BaseVersion`, original `SubmittedOp`, transformed committed `Op`, and operation identity
+- successful non-empty submits use `Backend.CommitOp` so the snapshot version and op log advance together
 - when `baseVersion < currentVersion`, the server transforms the submitted operation against the missing history range
 - subscription delivery is non-blocking; slow consumers may drop events unless you add a durable queue upstream
 

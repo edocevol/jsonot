@@ -55,6 +55,10 @@ type Backend interface {
 	// The caller is responsible for setting record.Version correctly.
 	AppendOp(ctx context.Context, record OpRecord) error
 
+	// CommitOp atomically persists an updated snapshot and its committed op log entry.
+	// Implementations must guarantee that either both records are stored or neither is.
+	CommitOp(ctx context.Context, doc DocRecord, op OpRecord) error
+
 	// GetOps returns ops that produced versions in [fromVersion+1, toVersion].
 	// The returned slice is ordered by version ascending.
 	// An empty slice is returned when fromVersion == toVersion.

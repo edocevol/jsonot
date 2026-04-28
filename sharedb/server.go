@@ -269,15 +269,12 @@ func (s *Server) SubmitWithRequest(ctx context.Context, req SubmitRequest) (Subm
 	newVersion := rec.Version + 1
 	serializedOp := append(json.RawMessage(nil), transformed.ToValue().RawMessage()...)
 
-	// Step 5: persist snapshot + op log
-	if err := s.backend.SaveDoc(ctx, DocRecord{
+	// Step 5: persist snapshot + op log atomically
+	if err := s.backend.CommitOp(ctx, DocRecord{
 		DocumentID: req.DocumentID,
 		Version:    newVersion,
 		Doc:        newDoc,
-	}); err != nil {
-		return SubmitResult{}, err
-	}
-	if err := s.backend.AppendOp(ctx, OpRecord{
+	}, OpRecord{
 		DocumentID:  req.DocumentID,
 		Version:     newVersion,
 		BaseVersion: req.BaseVersion,
