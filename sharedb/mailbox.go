@@ -24,6 +24,9 @@ var ErrDuplicateEnvelopeID = errors.New("sharedb: duplicate envelope id")
 // ErrInvalidEnvelope means the envelope is missing required cursor or payload fields.
 var ErrInvalidEnvelope = errors.New("sharedb: invalid envelope")
 
+// ErrInvalidEvent means an event payload is malformed for mailbox dispatch.
+var ErrInvalidEvent = errors.New("sharedb: invalid event")
+
 // Envelope is a replayable session-scoped transport message.
 type Envelope struct {
 	ID         string       `json:"id"`
@@ -52,7 +55,7 @@ func cloneEnvelope(env Envelope) Envelope {
 }
 
 func validateEnvelope(env Envelope) error {
-	if env.ID == "" || env.SessionID == "" {
+	if env.ID == "" || env.SessionID == "" || env.DocumentID == "" {
 		return ErrInvalidEnvelope
 	}
 	switch env.Kind {
@@ -66,6 +69,13 @@ func validateEnvelope(env Envelope) error {
 		}
 	default:
 		return ErrInvalidEnvelope
+	}
+	return nil
+}
+
+func validateDispatchEvent(event Event) error {
+	if event.Type == "" || event.DocumentID == "" || event.Version < 0 {
+		return ErrInvalidEvent
 	}
 	return nil
 }
