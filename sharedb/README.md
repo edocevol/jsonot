@@ -134,6 +134,25 @@ server := sharedb.NewServer(
 
 Middleware are applied in declaration order: the first middleware is the outermost wrapper.
 
+## Session mailbox / envelope replay
+
+The realtime `Publisher` remains a best-effort live fanout primitive. Session mailboxes serve a different purpose: reconnect-safe replay for transports such as WebSocket or Socket.IO.
+
+Current mailbox building blocks include:
+
+- `Envelope` and `EnvelopeKind` for session-scoped replay messages
+- `MailboxStore` for append / replay / ack persistence
+- `NewMemoryMailboxStore()` for tests and single-process demos
+- `ReplaySessionMailbox(...)` for transport-friendly replay results
+- `EnvelopeForSession(...)` to convert committed document events into session-scoped event envelopes
+
+Important semantics:
+
+- mailbox state is keyed by stable `sessionID`, not a transient websocket connection ID
+- `Envelope.ID` is the replay cursor; it is distinct from document `version`
+- unknown non-empty replay cursors become `RequiresResync=true` in `ReplaySessionMailbox(...)`
+- mailbox replay complements `GetOperations(...)` / snapshot recovery; it does not replace document history APIs
+
 ## FAQ
 
 ### Is this a ShareDB alternative in Go?
