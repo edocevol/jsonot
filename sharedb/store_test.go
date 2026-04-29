@@ -383,6 +383,135 @@ func TestSubmitWithRequestPublishesSequence(t *testing.T) {
 	}
 }
 
+func TestSubmitMiddlewareCanRejectBeforeCommit(t *testing.T) {
+	ctx := context.Background()
+	rejected := errors.New("reject submit")
+	store := NewServer(
+		NewMemoryBackend(),
+		NewMemoryLocker(),
+		WithSubmitMiddleware(func(next SubmitHandler) SubmitHandler {
+			return func(ctx context.Context, req SubmitRequest) (SubmitResult, error) {
+				return SubmitResult{}, rejected
+			}
+		}),
+	)
+
+	_, err := store.CreateDocument(ctx, "doc-middleware-reject", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	_, err = store.Submit(ctx, "doc-middleware-reject", 0, json.RawMessage(`[{"p":["counter"],"na":1}]`), "client-a")
+	if !errors.Is(err, rejected) {
+		t.Fatalf("expected rejection error, got %v", err)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-middleware-reject")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	if snapshot.Version != 0 || string(snapshot.Document) != `{"counter":0}` {
+		t.Fatalf("submit should not commit after middleware rejection: %+v", snapshot)
+	}
+
+	ops, err := store.GetOperations(ctx, "doc-middleware-reject", 0, 0)
+	if err != nil {
+		t.Fatalf("get operations failed: %v", err)
+	}
+	if len(ops) != 0 {
+		t.Fatalf("expected no committed ops after rejection, got %d", len(ops))
+	}
+}
+
+func TestNewServerPanicsWhenSubmitMiddlewareReturnsNilHandler(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected NewServer to panic when middleware returns nil handler")
+		}
+		if msg := r.(string); msg != "sharedb: submit middleware returned nil handler" {
+			t.Fatalf("unexpected panic message: %v", r)
+		}
+	}()
+
+	_ = NewServer(
+		NewMemoryBackend(),
+		NewMemoryLocker(),
+		WithSubmitMiddleware(func(next SubmitHandler) SubmitHandler {
+			return nil
+		}),
+	)
+}
+
+func TestSubmitMiddlewareCanRewriteRequestAndObserveResult(t *testing.T) {
+	ctx := context.Background()
+	var calls []string
+	store := NewServer(
+		NewMemoryBackend(),
+		NewMemoryLocker(),
+		WithSubmitMiddleware(
+			func(next SubmitHandler) SubmitHandler {
+				return func(ctx context.Context, req SubmitRequest) (SubmitResult, error) {
+					calls = append(calls, "outer-before")
+					result, err := next(ctx, req)
+					calls = append(calls, "outer-after")
+					return result, err
+				}
+			},
+			func(next SubmitHandler) SubmitHandler {
+				return func(ctx context.Context, req SubmitRequest) (SubmitResult, error) {
+					calls = append(calls, "inner-before")
+					req.Source = "middleware-client"
+					result, err := next(ctx, req)
+					if err == nil {
+						calls = append(calls, "inner-after")
+					}
+					return result, err
+				}
+			},
+		),
+	)
+
+	_, err := store.CreateDocument(ctx, "doc-middleware-wrap", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	ch, cancel, err := store.Subscribe(ctx, "doc-middleware-wrap", 1)
+	if err != nil {
+		t.Fatalf("subscribe failed: %v", err)
+	}
+	defer cancel()
+
+	result, err := store.Submit(ctx, "doc-middleware-wrap", 0, json.RawMessage(`[{"p":["counter"],"na":1}]`), "client-a")
+	if err != nil {
+		t.Fatalf("submit failed: %v", err)
+	}
+	if result.Version != 1 || string(result.Document) != `{"counter":1}` {
+		t.Fatalf("unexpected submit result: %+v", result)
+	}
+	wantCalls := []string{"outer-before", "inner-before", "inner-after", "outer-after"}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("unexpected middleware call order: got %v want %v", calls, wantCalls)
+	}
+
+	ops, err := store.GetOperations(ctx, "doc-middleware-wrap", 0, 1)
+	if err != nil {
+		t.Fatalf("get operations failed: %v", err)
+	}
+	if len(ops) != 1 || ops[0].Source != "middleware-client" {
+		t.Fatalf("middleware should rewrite request before commit, got %+v", ops)
+	}
+
+	select {
+	case event := <-ch:
+		if event.Source != "middleware-client" {
+			t.Fatalf("middleware-rewritten source should be published, got %+v", event)
+		}
+	default:
+		t.Fatalf("expected submit event")
+	}
+}
+
 func TestGetOperationsRejectsInvalidRanges(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryServer()

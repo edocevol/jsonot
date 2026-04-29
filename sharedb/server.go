@@ -78,12 +78,32 @@ type SubmitResult struct {
 	Document json.RawMessage `json:"document"`
 }
 
+// SubmitHandler handles a structured submit request.
+type SubmitHandler func(context.Context, SubmitRequest) (SubmitResult, error)
+
+// SubmitMiddleware wraps submit handling so callers can validate, reject,
+// enrich, or observe submit requests/results.
+type SubmitMiddleware func(SubmitHandler) SubmitHandler
+
 // ServerOption is a functional option for NewServer.
 type ServerOption func(*Server)
 
 // WithPublisher overrides the default in-memory Publisher.
 func WithPublisher(pub Publisher) ServerOption {
 	return func(s *Server) { s.pub = pub }
+}
+
+// WithSubmitMiddleware appends middleware around SubmitWithRequest/Submit.
+// Middleware are applied in declaration order: the first middleware is the
+// outermost wrapper, and the last middleware runs closest to the core submit.
+func WithSubmitMiddleware(middleware ...SubmitMiddleware) ServerOption {
+	return func(s *Server) {
+		for _, mw := range middleware {
+			if mw != nil {
+				s.submitMiddleware = append(s.submitMiddleware, mw)
+			}
+		}
+	}
 }
 
 // Server is the central coordinator for collaborative editing.
@@ -103,6 +123,9 @@ type Server struct {
 	locker  Locker
 	pub     Publisher
 	ot      *jsonot.JSONOperationTransformer
+
+	submitMiddleware []SubmitMiddleware
+	submitHandler    SubmitHandler
 }
 
 // NewServer creates a Server with the given backend and locker.
@@ -122,6 +145,7 @@ func NewServer(backend Backend, locker Locker, opts ...ServerOption) *Server {
 	if s.pub == nil {
 		s.pub = NewMemoryPublisher()
 	}
+	s.submitHandler = s.buildSubmitHandler()
 	return s
 }
 
@@ -189,6 +213,10 @@ func (s *Server) Submit(
 // addition to Submit's versioned rebase semantics, Source+Sequence provide
 // ShareDB-style idempotency for clients that retry after transport failures.
 func (s *Server) SubmitWithRequest(ctx context.Context, req SubmitRequest) (SubmitResult, error) {
+	return s.submitHandler(ctx, req)
+}
+
+func (s *Server) submitCore(ctx context.Context, req SubmitRequest) (SubmitResult, error) {
 	opID := req.opID()
 	// Step 1: acquire lock
 	unlock, err := s.locker.Lock(ctx, req.DocumentID)
@@ -317,6 +345,17 @@ func (s *Server) SubmitWithRequest(ctx context.Context, req SubmitRequest) (Subm
 	})
 
 	return result, nil
+}
+
+func (s *Server) buildSubmitHandler() SubmitHandler {
+	handler := s.submitCore
+	for i := len(s.submitMiddleware) - 1; i >= 0; i-- {
+		handler = s.submitMiddleware[i](handler)
+		if handler == nil {
+			panic("sharedb: submit middleware returned nil handler")
+		}
+	}
+	return handler
 }
 
 // Subscribe registers a subscriber for committed operations on documentID.

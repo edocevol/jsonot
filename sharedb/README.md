@@ -12,6 +12,7 @@ It gives you the backend building blocks that usually sit around an OT engine:
 - document lifecycle events (`op`, `delete`)
 - atomic snapshot + op-log commits
 - client submit by base version (`Submit`)
+- submit middleware/hooks for validation, auditing, and request enrichment
 - server-side rebase of concurrent operations with `Transform`
 - subscription to committed updates (`Subscribe`)
 
@@ -78,7 +79,8 @@ flowchart LR
 - `DeleteDocument(ctx, documentID, baseVersion, source)`: delete an existing document after exact version validation and notify subscribers
 - `GetSnapshot(ctx, documentID)`: get the latest snapshot
 - `Submit(ctx, documentID, baseVersion, operation, source)`: submit an operation
-- `SubmitWithRequest(ctx, req)`: submit an operation with optional `OpID` / `Source` + `Sequence` idempotency metadata
+- `SubmitWithRequest(ctx, req)`: submit an operation with optional `ID` / `Source` + `Sequence` idempotency metadata
+- `WithSubmitMiddleware(middleware...)`: wrap submit handling for validation, auditing, metrics, request rewriting, or custom hooks
 - `GetOperations(ctx, documentID, fromVersion, toVersion)`: fetch committed operation history for versions `(fromVersion, toVersion]`
 - `Subscribe(ctx, documentID, buffer)`: subscribe to commit events
 
@@ -103,6 +105,34 @@ That makes it a good choice when you want ShareDB-style ideas with a smaller, Go
 2. create a document with `CreateDocument`
 3. submit an operation with `Submit`
 4. use `GetOperations` to catch up missed versions after reconnects, or `Subscribe` for live committed updates
+
+## Submit middleware / hooks
+
+Use `WithSubmitMiddleware` when you need ShareDB-style submit interception without forking the core server flow.
+Middleware can:
+
+- reject a submit before it acquires persistence side effects
+- rewrite request metadata such as `Source`, `Sequence`, or `ID`
+- measure latency or emit audit logs around successful/failed submits
+- observe the final `SubmitResult` after OT rebase and commit
+
+```go
+server := sharedb.NewServer(
+    sharedb.NewMemoryBackend(),
+    sharedb.NewMemoryLocker(),
+    sharedb.WithSubmitMiddleware(func(next sharedb.SubmitHandler) sharedb.SubmitHandler {
+        return func(ctx context.Context, req sharedb.SubmitRequest) (sharedb.SubmitResult, error) {
+            if req.Source == "" {
+                return sharedb.SubmitResult{}, errors.New("source required")
+            }
+            req.Source = "audited-" + req.Source
+            return next(ctx, req)
+        }
+    }),
+)
+```
+
+Middleware are applied in declaration order: the first middleware is the outermost wrapper.
 
 ## FAQ
 
