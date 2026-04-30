@@ -16,6 +16,9 @@ const (
 	MessageTypeResyncRequired = "resync_required"
 	MessageTypeEvent          = "event"
 	MessageTypeAckEnvelope    = "ack_envelope"
+	MessageTypeSubmit         = "submit"
+	MessageTypeSubmitAck      = "submit_ack"
+	MessageTypeSubmitError    = "submit_error"
 )
 
 const defaultReplayLimit = 256
@@ -47,10 +50,14 @@ type ReplayMessage struct {
 
 // ResyncRequiredMessage tells the client mailbox replay cannot continue from its cursor.
 type ResyncRequiredMessage struct {
-	Type                string `json:"type"`
-	SessionID           string `json:"sessionId"`
-	DocumentID          string `json:"documentId"`
-	LastAckedEnvelopeID string `json:"lastAckedEnvelopeId,omitempty"`
+	Type                string      `json:"type"`
+	SessionID           string      `json:"sessionId"`
+	DocumentID          string      `json:"documentId"`
+	LastAckedEnvelopeID string      `json:"lastAckedEnvelopeId,omitempty"`
+	Reason              StaleReason `json:"reason,omitempty"`
+	CurrentVersion      int         `json:"currentVersion,omitempty"`
+	MinSupportedVersion int         `json:"minSupportedVersion,omitempty"`
+	MaxRebaseGap        int         `json:"maxRebaseGap,omitempty"`
 }
 
 // EventMessage delivers one live session envelope over the websocket transport.
@@ -66,6 +73,47 @@ type AckEnvelopeRequest struct {
 	Type       string `json:"type"`
 	SessionID  string `json:"sessionId"`
 	EnvelopeID string `json:"envelopeId"`
+}
+
+// SubmitMessage carries one structured document submit over websocket transport.
+type SubmitMessage struct {
+	Type       string        `json:"type"`
+	SessionID  string        `json:"sessionId"`
+	DocumentID string        `json:"documentId"`
+	Request    SubmitRequest `json:"request"`
+}
+
+// SubmitAckMessage acknowledges a successful submit and includes the replayable envelope.
+type SubmitAckMessage struct {
+	Type       string       `json:"type"`
+	SessionID  string       `json:"sessionId"`
+	DocumentID string       `json:"documentId"`
+	Result     SubmitResult `json:"result"`
+	Envelope   *Envelope    `json:"envelope,omitempty"`
+}
+
+// SubmitErrorCode classifies websocket submit failures.
+type SubmitErrorCode string
+
+const (
+	SubmitErrorCodeStaleResyncRequired       SubmitErrorCode = "stale_resync_required"
+	SubmitErrorCodeInvalidVersion            SubmitErrorCode = "invalid_version"
+	SubmitErrorCodeDuplicateSequenceConflict SubmitErrorCode = "duplicate_sequence_conflict"
+	SubmitErrorCodeInvalidClientMessage      SubmitErrorCode = "invalid_client_message"
+	SubmitErrorCodeUnknown                   SubmitErrorCode = "unknown"
+)
+
+// SubmitErrorMessage surfaces a structured submit failure to websocket clients.
+type SubmitErrorMessage struct {
+	Type                string          `json:"type"`
+	SessionID           string          `json:"sessionId"`
+	DocumentID          string          `json:"documentId"`
+	Code                SubmitErrorCode `json:"code"`
+	Reason              StaleReason     `json:"reason,omitempty"`
+	CurrentVersion      int             `json:"currentVersion,omitempty"`
+	MinSupportedVersion int             `json:"minSupportedVersion,omitempty"`
+	MaxRebaseGap        int             `json:"maxRebaseGap,omitempty"`
+	Message             string          `json:"message,omitempty"`
 }
 
 // HandleConnect registers the websocket connection for the session and sends replay state.
@@ -138,6 +186,10 @@ func sendConnectHandshake(ctx context.Context, conn *ClientConn, mailbox Mailbox
 			SessionID:           req.SessionID,
 			DocumentID:          req.DocumentID,
 			LastAckedEnvelopeID: replay.LastAcked,
+			Reason:              replay.Reason,
+			CurrentVersion:      replay.CurrentVersion,
+			MinSupportedVersion: replay.MinSupportedVersion,
+			MaxRebaseGap:        replay.MaxRebaseGap,
 		})
 	}
 	if len(replay.Envelopes) == 0 {
@@ -165,6 +217,82 @@ func validateAckEnvelopeRequest(req AckEnvelopeRequest) error {
 	return nil
 }
 
+func validateSubmitMessage(msg SubmitMessage) error {
+	if msg.Type != MessageTypeSubmit || msg.SessionID == "" || msg.DocumentID == "" {
+		return ErrInvalidClientMessage
+	}
+	if msg.Request.DocumentID == "" {
+		msg.Request.DocumentID = msg.DocumentID
+	}
+	if msg.Request.DocumentID != msg.DocumentID {
+		return ErrInvalidClientMessage
+	}
+	return nil
+}
+
+func canonicalizeSubmitRequest(msg SubmitMessage) SubmitRequest {
+	req := msg.Request
+	req.DocumentID = msg.DocumentID
+	req.Source = msg.SessionID
+	if req.ID.Source != "" || req.ID.Sequence > 0 {
+		req.ID.Source = msg.SessionID
+	}
+	return req
+}
+
+func submitAckEnvelope(sessionID, documentID string, version int, gen EnvelopeIDGenerator) (Envelope, error) {
+	if gen == nil {
+		return Envelope{}, ErrInvalidClientMessage
+	}
+	id := gen()
+	if id == "" {
+		return Envelope{}, ErrInvalidEnvelope
+	}
+	return Envelope{
+		ID:         id,
+		SessionID:  sessionID,
+		DocumentID: documentID,
+		Kind:       EnvelopeKindAck,
+		Version:    version,
+	}, nil
+}
+
+func submitErrorMessage(sessionID, documentID string, err error) SubmitErrorMessage {
+	msg := SubmitErrorMessage{
+		Type:       MessageTypeSubmitError,
+		SessionID:  sessionID,
+		DocumentID: documentID,
+		Code:       SubmitErrorCodeUnknown,
+		Message:    "submit failed",
+	}
+	var staleErr *StaleSubmitError
+	if errors.As(err, &staleErr) {
+		msg.Code = SubmitErrorCodeStaleResyncRequired
+		msg.Reason = staleErr.Reason
+		msg.CurrentVersion = staleErr.CurrentVersion
+		msg.MinSupportedVersion = staleErr.MinSupportedVersion
+		msg.MaxRebaseGap = staleErr.MaxRebaseGap
+		msg.Message = "resync required"
+		return msg
+	}
+	if errors.Is(err, ErrInvalidVersion) {
+		msg.Code = SubmitErrorCodeInvalidVersion
+		msg.Message = "invalid document version"
+		return msg
+	}
+	if errors.Is(err, ErrDuplicateSequenceConflict) {
+		msg.Code = SubmitErrorCodeDuplicateSequenceConflict
+		msg.Message = "duplicate submit sequence conflict"
+		return msg
+	}
+	if errors.Is(err, ErrInvalidClientMessage) {
+		msg.Code = SubmitErrorCodeInvalidClientMessage
+		msg.Message = "invalid client message"
+		return msg
+	}
+	return msg
+}
+
 // HandleAckEnvelope advances the session mailbox ack cursor through the provided envelope.
 func HandleAckEnvelope(ctx context.Context, mailbox MailboxStore, req AckEnvelopeRequest) error {
 	if err := validateAckEnvelopeRequest(req); err != nil {
@@ -174,6 +302,42 @@ func HandleAckEnvelope(ctx context.Context, mailbox MailboxStore, req AckEnvelop
 		return ErrInvalidClientMessage
 	}
 	return mailbox.AckThrough(ctx, req.SessionID, req.EnvelopeID)
+}
+
+// HandleSubmit executes one structured submit and sends either submit_ack or submit_error.
+func HandleSubmit(ctx context.Context, conn *ClientConn, server *Server, mailbox MailboxStore, msg SubmitMessage, gen EnvelopeIDGenerator) error {
+	if err := validateSubmitMessage(msg); err != nil {
+		return err
+	}
+	if conn == nil || server == nil || mailbox == nil || gen == nil {
+		return ErrInvalidClientMessage
+	}
+	req := canonicalizeSubmitRequest(msg)
+	result, err := server.SubmitWithRequest(ctx, req)
+	if err != nil {
+		if sendErr := conn.sendJSON(submitErrorMessage(msg.SessionID, msg.DocumentID, err)); sendErr != nil {
+			return sendErr
+		}
+		return nil
+	}
+	ack := SubmitAckMessage{
+		Type:       MessageTypeSubmitAck,
+		SessionID:  msg.SessionID,
+		DocumentID: msg.DocumentID,
+		Result:     result,
+	}
+	if result.Duplicate {
+		return conn.sendJSON(ack)
+	}
+	env, err := submitAckEnvelope(msg.SessionID, msg.DocumentID, result.Version, gen)
+	if err != nil {
+		return err
+	}
+	if err := mailbox.Append(ctx, env); err != nil {
+		return err
+	}
+	ack.Envelope = &env
+	return conn.sendJSON(ack)
 }
 
 // AttachLiveSession subscribes the active websocket connection to live document events.
@@ -220,6 +384,9 @@ func startLiveRelay(conn *ClientConn, mailbox MailboxStore, sessionID, documentI
 				if event.Version <= skipThroughVersion {
 					continue
 				}
+				if event.Source == sessionID {
+					continue
+				}
 				env, err := EnvelopeForSession(sessionID, event, gen)
 				if err != nil {
 					conn.Close()
@@ -261,6 +428,22 @@ func NewSessionInboundHandler(server *Server, mailbox MailboxStore, sessions *Se
 				return ErrInvalidClientMessage
 			}
 			return HandleConnectAndAttachLive(ctx, conn, server, sessions, mailbox, req, gen)
+		case MessageTypeSubmit:
+			var msg SubmitMessage
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				return ErrInvalidClientMessage
+			}
+			if sessions == nil {
+				return ErrInvalidClientMessage
+			}
+			active, ok := sessions.Active(msg.SessionID)
+			if !ok || active != conn {
+				return ErrInvalidClientMessage
+			}
+			if !conn.hasLiveAttachment(msg.SessionID, msg.DocumentID) {
+				return ErrInvalidClientMessage
+			}
+			return HandleSubmit(ctx, conn, server, mailbox, msg, gen)
 		case MessageTypeAckEnvelope:
 			var req AckEnvelopeRequest
 			if err := json.Unmarshal(payload, &req); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -110,6 +111,403 @@ func TestStoreSequentialAndRebasedSubmit(t *testing.T) {
 
 	if got := string(snapshot.Document); got != `{"counter":3}` {
 		t.Fatalf("unexpected final document: got %s want %s", got, `{"counter":3}`)
+	}
+}
+
+func TestStorePageBlocksConcurrentInsertions(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	base := pageDocument(
+		block("welcome-block", "欢迎来到 jsonot + BlockNote 协同编辑示例"),
+	)
+	_, err := store.CreateDocument(ctx, "doc-page-blocks", base)
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	leftOp := json.RawMessage(`[{"p":["blocks",1],"li":{"id":"left-block","type":"paragraph","content":[{"type":"text","text":"左侧新增段落","styles":{}}]}}]`)
+	rightOp := json.RawMessage(`[{"p":["blocks",1],"li":{"id":"right-block","type":"paragraph","content":[{"type":"text","text":"右侧新增段落","styles":{}}]}}]`)
+
+	leftResult, err := store.Submit(ctx, "doc-page-blocks", 0, leftOp, "left-client")
+	if err != nil {
+		t.Fatalf("submit left failed: %v", err)
+	}
+	if leftResult.Version != 1 || leftResult.Rebased {
+		t.Fatalf("unexpected left submit result: %+v", leftResult)
+	}
+
+	rightResult, err := store.Submit(ctx, "doc-page-blocks", 0, rightOp, "right-client")
+	if err != nil {
+		t.Fatalf("submit right failed: %v", err)
+	}
+	if rightResult.Version != 2 || !rightResult.Rebased {
+		t.Fatalf("unexpected right submit result: %+v", rightResult)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-page-blocks")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+
+	assertPageBlockOrder(t, snapshot.Document, "welcome-block", "right-block", "left-block")
+	assertPageBlockText(t, snapshot.Document, "left-block", "左侧新增段落")
+	assertPageBlockText(t, snapshot.Document, "right-block", "右侧新增段落")
+}
+
+func TestStorePageBlocksConcurrentInsertAndModify(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	base := pageDocument(
+		block("welcome-block", "欢迎来到 jsonot + BlockNote 协同编辑示例"),
+	)
+	_, err := store.CreateDocument(ctx, "doc-page-mixed", base)
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	insertOp := json.RawMessage(`[{"p":["blocks",1],"li":{"id":"appendix-block","type":"paragraph","content":[{"type":"text","text":"追加说明","styles":{}}]}}]`)
+	modifyOp := json.RawMessage(`[{"p":["blocks",0,"content",0,"text"],"od":"欢迎来到 jsonot + BlockNote 协同编辑示例","oi":"欢迎来到 jsonot + BlockNote 协同编辑示例（已修改）"}]`)
+
+	insertResult, err := store.Submit(ctx, "doc-page-mixed", 0, insertOp, "insert-client")
+	if err != nil {
+		t.Fatalf("submit insert failed: %v", err)
+	}
+	if insertResult.Version != 1 || insertResult.Rebased {
+		t.Fatalf("unexpected insert submit result: %+v", insertResult)
+	}
+
+	modifyResult, err := store.Submit(ctx, "doc-page-mixed", 0, modifyOp, "modify-client")
+	if err != nil {
+		t.Fatalf("submit modify failed: %v", err)
+	}
+	if modifyResult.Version != 2 || !modifyResult.Rebased {
+		t.Fatalf("unexpected modify submit result: %+v", modifyResult)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-page-mixed")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+
+	assertPageBlockOrder(t, snapshot.Document, "welcome-block", "appendix-block")
+	assertPageBlockText(t, snapshot.Document, "welcome-block", "欢迎来到 jsonot + BlockNote 协同编辑示例（已修改）")
+	assertPageBlockText(t, snapshot.Document, "appendix-block", "追加说明")
+}
+
+func TestStorePageBlocksConcurrentModifySameBlock(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	base := pageDocument(
+		block("welcome-block", "hello"),
+	)
+	_, err := store.CreateDocument(ctx, "doc-page-same-block", base)
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	leftOp := json.RawMessage(`[{"p":["blocks",0,"content",0,"text"],"od":"hello","oi":"hello left"}]`)
+	rightOp := json.RawMessage(`[{"p":["blocks",0,"content",0,"text"],"od":"hello","oi":"hello right"}]`)
+
+	if _, err := store.Submit(ctx, "doc-page-same-block", 0, leftOp, "left-client"); err != nil {
+		t.Fatalf("submit left failed: %v", err)
+	}
+	rightResult, err := store.Submit(ctx, "doc-page-same-block", 0, rightOp, "right-client")
+	if err != nil {
+		t.Fatalf("submit right failed: %v", err)
+	}
+	if !rightResult.Rebased || !sameJSON(t, rightResult.Operation, json.RawMessage(`[{"p":["blocks",0,"content",0,"text"],"od":"hello left","oi":"hello right"}]`)) {
+		t.Fatalf("unexpected rebased right operation: %+v", rightResult)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-page-same-block")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	assertPageBlockText(t, snapshot.Document, "welcome-block", "hello right")
+}
+
+func TestSubmitRebasesAcrossMultipleMissedOps(t *testing.T) {
+	ctx := context.Background()
+	backend := &countingBackend{MemoryBackend: NewMemoryBackend()}
+	store := NewServer(backend, NewMemoryLocker())
+
+	_, err := store.CreateDocument(ctx, "doc-stale-gap", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	for i, delta := range []int{1, 2, 3} {
+		if _, err := store.Submit(ctx, "doc-stale-gap", i, json.RawMessage(fmt.Sprintf(`[{"p":["counter"],"na":%d}]`, delta)), fmt.Sprintf("writer-%d", i+1)); err != nil {
+			t.Fatalf("seed submit %d failed: %v", i+1, err)
+		}
+	}
+
+	result, err := store.Submit(ctx, "doc-stale-gap", 0, json.RawMessage(`[{"p":["counter"],"na":10}]`), "stale-client")
+	if err != nil {
+		t.Fatalf("submit stale op failed: %v", err)
+	}
+	if !result.Rebased || result.Version != 4 {
+		t.Fatalf("unexpected stale submit result: %+v", result)
+	}
+	if backend.getOpsCalls != 1 || backend.lastGetOpsFrom != 0 || backend.lastGetOpsTo != 3 {
+		t.Fatalf("unexpected GetOps usage: calls=%d from=%d to=%d", backend.getOpsCalls, backend.lastGetOpsFrom, backend.lastGetOpsTo)
+	}
+	if !sameJSON(t, result.Operation, json.RawMessage(`[{"p":["counter"],"na":10}]`)) {
+		t.Fatalf("unexpected transformed op: %s", result.Operation)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-stale-gap")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	if got := string(snapshot.Document); got != `{"counter":16}` {
+		t.Fatalf("unexpected final document: %s", snapshot.Document)
+	}
+
+	ops, err := store.GetOperations(ctx, "doc-stale-gap", 3, 4)
+	if err != nil {
+		t.Fatalf("get operations failed: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("unexpected op count: got %d want 1", len(ops))
+	}
+	if ops[0].BaseVersion != 0 || !sameJSON(t, ops[0].SubmittedOp, json.RawMessage(`[{"p":["counter"],"na":10}]`)) || !sameJSON(t, ops[0].Op, result.Operation) {
+		t.Fatalf("unexpected stored stale op record: %+v", ops[0])
+	}
+}
+
+func TestSubmitStaleDeleteBecomesNoopAfterConcurrentDelete(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+
+	base := pageDocument(
+		block("welcome-block", "hello"),
+		block("obsolete-block", "bye"),
+	)
+	_, err := store.CreateDocument(ctx, "doc-stale-noop", base)
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+
+	deleteOp := json.RawMessage(`[{"p":["blocks",1],"ld":{"id":"obsolete-block","type":"paragraph","content":[{"type":"text","text":"bye","styles":{}}]}}]`)
+	if _, err := store.Submit(ctx, "doc-stale-noop", 0, deleteOp, "deleter-a"); err != nil {
+		t.Fatalf("first delete failed: %v", err)
+	}
+
+	result, err := store.Submit(ctx, "doc-stale-noop", 0, deleteOp, "deleter-b")
+	if err != nil {
+		t.Fatalf("second stale delete failed: %v", err)
+	}
+	if !result.Rebased || result.Version != 1 || !sameJSON(t, result.Operation, json.RawMessage(`[]`)) {
+		t.Fatalf("unexpected noop stale delete result: %+v", result)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-stale-noop")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	assertPageBlockOrder(t, snapshot.Document, "welcome-block")
+
+	ops, err := store.GetOperations(ctx, "doc-stale-noop", 0, 1)
+	if err != nil {
+		t.Fatalf("get operations failed: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("noop stale delete should not append op, got %d committed ops", len(ops))
+	}
+}
+
+func TestSubmitRejectsStaleBasePastRebaseWindow(t *testing.T) {
+	ctx := context.Background()
+	backend := &countingBackend{MemoryBackend: NewMemoryBackend()}
+	store := NewServer(backend, NewMemoryLocker(), WithMaxRebaseGap(2))
+
+	_, err := store.CreateDocument(ctx, "doc-stale-window", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.Submit(ctx, "doc-stale-window", i, json.RawMessage(`[{"p":["counter"],"na":1}]`), fmt.Sprintf("writer-%d", i+1)); err != nil {
+			t.Fatalf("seed submit %d failed: %v", i+1, err)
+		}
+	}
+
+	_, err = store.Submit(ctx, "doc-stale-window", 0, json.RawMessage(`[{"p":["counter"],"na":10}]`), "stale-client")
+	if err == nil {
+		t.Fatalf("expected stale submit to require resync")
+	}
+	if !errors.Is(err, ErrStaleResyncRequired) {
+		t.Fatalf("expected ErrStaleResyncRequired, got %v", err)
+	}
+	var staleErr *StaleSubmitError
+	if !errors.As(err, &staleErr) {
+		t.Fatalf("expected StaleSubmitError, got %T", err)
+	}
+	if staleErr.BaseVersion != 0 || staleErr.CurrentVersion != 3 || staleErr.MinSupportedVersion != 1 || staleErr.MaxRebaseGap != 2 {
+		t.Fatalf("unexpected stale error details: %+v", staleErr)
+	}
+	if backend.getOpsCalls != 0 {
+		t.Fatalf("GetOps should not run when rebase window is exceeded, got %d calls", backend.getOpsCalls)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-stale-window")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	if got := string(snapshot.Document); got != `{"counter":3}` {
+		t.Fatalf("unexpected document after rejected stale submit: %s", snapshot.Document)
+	}
+	ops, err := store.GetOperations(ctx, "doc-stale-window", 0, 3)
+	if err != nil {
+		t.Fatalf("get operations failed: %v", err)
+	}
+	if len(ops) != 3 {
+		t.Fatalf("rejected stale submit should not append op, got %d committed ops", len(ops))
+	}
+}
+
+func TestSubmitAllowsStaleBaseAtRebaseWindowBoundary(t *testing.T) {
+	ctx := context.Background()
+	backend := &countingBackend{MemoryBackend: NewMemoryBackend()}
+	store := NewServer(backend, NewMemoryLocker(), WithMaxRebaseGap(2))
+
+	_, err := store.CreateDocument(ctx, "doc-stale-boundary", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := store.Submit(ctx, "doc-stale-boundary", i, json.RawMessage(`[{"p":["counter"],"na":1}]`), fmt.Sprintf("writer-%d", i+1)); err != nil {
+			t.Fatalf("seed submit %d failed: %v", i+1, err)
+		}
+	}
+
+	result, err := store.Submit(ctx, "doc-stale-boundary", 0, json.RawMessage(`[{"p":["counter"],"na":10}]`), "stale-client")
+	if err != nil {
+		t.Fatalf("boundary stale submit failed: %v", err)
+	}
+	if !result.Rebased || result.Version != 3 {
+		t.Fatalf("unexpected boundary stale submit result: %+v", result)
+	}
+	if backend.getOpsCalls != 1 || backend.lastGetOpsFrom != 0 || backend.lastGetOpsTo != 2 {
+		t.Fatalf("unexpected GetOps usage at boundary: calls=%d from=%d to=%d", backend.getOpsCalls, backend.lastGetOpsFrom, backend.lastGetOpsTo)
+	}
+}
+
+func TestStaleSubmitErrorExposesReason(t *testing.T) {
+	err := &StaleSubmitError{Reason: StaleReasonVersionBehindWindow, DocumentID: "doc-1", BaseVersion: 1, CurrentVersion: 5, MinSupportedVersion: 3, MaxRebaseGap: 2}
+	if err.Reason != StaleReasonVersionBehindWindow {
+		t.Fatalf("unexpected stale reason: got %q want %q", err.Reason, StaleReasonVersionBehindWindow)
+	}
+}
+
+func TestResyncRequiredMessageIncludesReasonAndVersionMetadata(t *testing.T) {
+	ctx := context.Background()
+	mailbox := NewMemoryMailboxStore()
+	if err := mailbox.Append(ctx, testEnvelope("env-1", "sess-1", 1)); err != nil {
+		t.Fatalf("append envelope failed: %v", err)
+	}
+
+	serverWS, clientWS := newWebSocketPair(t)
+	defer clientWS.Close()
+	conn := NewClientConn(serverWS, 4)
+	conn.Start(nil)
+	defer conn.Wait()
+	defer conn.Close()
+
+	if err := sendConnectHandshake(ctx, conn, mailbox, ConnectRequest{
+		Type:           MessageTypeConnect,
+		SessionID:      "sess-1",
+		DocumentID:     "doc-1",
+		LastEnvelopeID: "env-missing",
+	}); err != nil {
+		t.Fatalf("send connect handshake failed: %v", err)
+	}
+
+	var connected ConnectedMessage
+	readClientJSON(t, clientWS, &connected)
+	var resync ResyncRequiredMessage
+	readClientJSON(t, clientWS, &resync)
+	if resync.Type != MessageTypeResyncRequired {
+		t.Fatalf("unexpected resync type: %s", resync.Type)
+	}
+	if resync.Reason != StaleReasonReplayCursorNotFound {
+		t.Fatalf("unexpected resync reason: got %q want %q", resync.Reason, StaleReasonReplayCursorNotFound)
+	}
+	if resync.CurrentVersion != 0 || resync.MinSupportedVersion != 0 || resync.MaxRebaseGap != 0 {
+		t.Fatalf("unexpected resync metadata: %+v", resync)
+	}
+}
+
+func TestGetSnapshotAtReturnsHistoricalVersion(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+	_, err := store.CreateDocument(ctx, "doc-snapshot-at", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	for version, delta := range []int{1, 2, 3} {
+		op := json.RawMessage(fmt.Sprintf(`[{"p":["counter"],"na":%d}]`, delta))
+		if _, err := store.Submit(ctx, "doc-snapshot-at", version, op, fmt.Sprintf("writer-%d", version+1)); err != nil {
+			t.Fatalf("seed submit %d failed: %v", version+1, err)
+		}
+	}
+
+	snapshot, err := store.GetSnapshotAt(ctx, "doc-snapshot-at", 2)
+	if err != nil {
+		t.Fatalf("GetSnapshotAt failed: %v", err)
+	}
+	if snapshot.Version != 2 {
+		t.Fatalf("unexpected snapshot version: got %d want 2", snapshot.Version)
+	}
+	if got := string(snapshot.Document); got != `{"counter":3}` {
+		t.Fatalf("unexpected historical snapshot: %s", snapshot.Document)
+	}
+}
+
+func TestRollbackToVersionCommitsInverseOperation(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryServer()
+	_, err := store.CreateDocument(ctx, "doc-rollback", json.RawMessage(`{"counter":0}`))
+	if err != nil {
+		t.Fatalf("create document failed: %v", err)
+	}
+	if _, err := store.Submit(ctx, "doc-rollback", 0, json.RawMessage(`[{"p":["counter"],"na":1}]`), "writer-1"); err != nil {
+		t.Fatalf("submit first failed: %v", err)
+	}
+	if _, err := store.Submit(ctx, "doc-rollback", 1, json.RawMessage(`[{"p":["counter"],"na":2}]`), "writer-2"); err != nil {
+		t.Fatalf("submit second failed: %v", err)
+	}
+
+	result, err := store.RollbackToVersion(ctx, "doc-rollback", 1, "rollback-bot")
+	if err != nil {
+		t.Fatalf("RollbackToVersion failed: %v", err)
+	}
+	if result.Version != 3 {
+		t.Fatalf("unexpected rollback version: got %d want 3", result.Version)
+	}
+	if !sameJSON(t, result.Operation, json.RawMessage(`[{"p":["counter"],"na":-2}]`)) {
+		t.Fatalf("unexpected rollback operation: %s", result.Operation)
+	}
+	if got := string(result.Document); got != `{"counter":1}` {
+		t.Fatalf("unexpected rollback document: %s", result.Document)
+	}
+
+	snapshot, err := store.GetSnapshot(ctx, "doc-rollback")
+	if err != nil {
+		t.Fatalf("get snapshot failed: %v", err)
+	}
+	if got := string(snapshot.Document); got != `{"counter":1}` {
+		t.Fatalf("unexpected current snapshot after rollback: %s", snapshot.Document)
+	}
+
+	historical, err := store.GetSnapshotAt(ctx, "doc-rollback", 1)
+	if err != nil {
+		t.Fatalf("GetSnapshotAt after rollback failed: %v", err)
+	}
+	if !sameJSON(t, historical.Document, snapshot.Document) {
+		t.Fatalf("rollback target snapshot mismatch")
 	}
 }
 
@@ -579,4 +977,153 @@ func TestMemoryPublisherDeliversIndependentEventPayloads(t *testing.T) {
 	if string(rightEvent.Operation) != `[{"p":["x"],"na":1}]` || string(rightEvent.Document) != `{"x":1}` {
 		t.Fatalf("subscriber payloads should be independent, got op=%s doc=%s", rightEvent.Operation, rightEvent.Document)
 	}
+}
+
+func BenchmarkSubmitStaleBaseGap(b *testing.B) {
+	for _, gap := range []int{1, 10, 100, 1000} {
+		b.Run(fmt.Sprintf("counter-gap-%d", gap), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx := context.Background()
+				store := NewMemoryServer()
+				docID := fmt.Sprintf("doc-counter-%d", i)
+				if _, err := store.CreateDocument(ctx, docID, json.RawMessage(`{"counter":0}`)); err != nil {
+					b.Fatalf("create document failed: %v", err)
+				}
+				for version := 0; version < gap; version++ {
+					op := json.RawMessage(`[{"p":["counter"],"na":1}]`)
+					if _, err := store.Submit(ctx, docID, version, op, fmt.Sprintf("writer-%d", version)); err != nil {
+						b.Fatalf("seed submit failed: %v", err)
+					}
+				}
+				b.StartTimer()
+				_, err := store.Submit(ctx, docID, 0, json.RawMessage(`[{"p":["counter"],"na":10}]`), "stale-client")
+				b.StopTimer()
+				if err != nil {
+					b.Fatalf("stale submit failed: %v", err)
+				}
+			}
+		})
+
+		b.Run(fmt.Sprintf("page-block-gap-%d", gap), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx := context.Background()
+				store := NewMemoryServer()
+				docID := fmt.Sprintf("doc-page-%d", i)
+				if _, err := store.CreateDocument(ctx, docID, pageDocument(block("welcome-block", "hello"))); err != nil {
+					b.Fatalf("create document failed: %v", err)
+				}
+				for version := 0; version < gap; version++ {
+					op := json.RawMessage(fmt.Sprintf(`[{"p":["blocks",1],"li":{"id":"seed-%d","type":"paragraph","content":[{"type":"text","text":"seed-%d","styles":{}}]}}]`, version, version))
+					if _, err := store.Submit(ctx, docID, version, op, fmt.Sprintf("writer-%d", version)); err != nil {
+						b.Fatalf("seed submit failed: %v", err)
+					}
+				}
+				staleOp := json.RawMessage(`[{"p":["blocks",0,"content",0,"text"],"od":"hello","oi":"hello stale"}]`)
+				b.StartTimer()
+				_, err := store.Submit(ctx, docID, 0, staleOp, "stale-client")
+				b.StopTimer()
+				if err != nil {
+					b.Fatalf("stale submit failed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+type countingBackend struct {
+	*MemoryBackend
+	getOpsCalls    int
+	lastGetOpsFrom int
+	lastGetOpsTo   int
+}
+
+func (b *countingBackend) GetOps(ctx context.Context, docID string, fromVersion, toVersion int) ([]OpRecord, error) {
+	b.getOpsCalls++
+	b.lastGetOpsFrom = fromVersion
+	b.lastGetOpsTo = toVersion
+	return b.MemoryBackend.GetOps(ctx, docID, fromVersion, toVersion)
+}
+
+func pageDocument(blocks ...map[string]any) json.RawMessage {
+	payload, err := json.Marshal(map[string]any{"blocks": blocks})
+	if err != nil {
+		panic(err)
+	}
+	return payload
+}
+
+func block(id, text string) map[string]any {
+	return map[string]any{
+		"id":   id,
+		"type": "paragraph",
+		"content": []any{
+			map[string]any{
+				"type":   "text",
+				"text":   text,
+				"styles": map[string]any{},
+			},
+		},
+	}
+}
+
+func assertPageBlockOrder(t *testing.T, document json.RawMessage, wantIDs ...string) {
+	t.Helper()
+	got := extractPageBlockIDs(t, document)
+	if !reflect.DeepEqual(got, wantIDs) {
+		t.Fatalf("unexpected block order: got %v want %v", got, wantIDs)
+	}
+}
+
+func assertPageBlockText(t *testing.T, document json.RawMessage, blockID, want string) {
+	t.Helper()
+	got := extractPageBlockTexts(t, document)
+	if got[blockID] != want {
+		t.Fatalf("unexpected block text for %s: got %q want %q", blockID, got[blockID], want)
+	}
+}
+
+func extractPageBlockIDs(t *testing.T, document json.RawMessage) []string {
+	t.Helper()
+	type pageBlock struct {
+		ID string `json:"id"`
+	}
+	type page struct {
+		Blocks []pageBlock `json:"blocks"`
+	}
+	var decoded page
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatalf("unmarshal page document failed: %v", err)
+	}
+	ids := make([]string, 0, len(decoded.Blocks))
+	for _, blk := range decoded.Blocks {
+		ids = append(ids, blk.ID)
+	}
+	return ids
+}
+
+func extractPageBlockTexts(t *testing.T, document json.RawMessage) map[string]string {
+	t.Helper()
+	type textNode struct {
+		Text string `json:"text"`
+	}
+	type pageBlock struct {
+		ID      string     `json:"id"`
+		Content []textNode `json:"content"`
+	}
+	type page struct {
+		Blocks []pageBlock `json:"blocks"`
+	}
+	var decoded page
+	if err := json.Unmarshal(document, &decoded); err != nil {
+		t.Fatalf("unmarshal page document failed: %v", err)
+	}
+	texts := make(map[string]string, len(decoded.Blocks))
+	for _, blk := range decoded.Blocks {
+		if len(blk.Content) > 0 {
+			texts[blk.ID] = blk.Content[0].Text
+		}
+	}
+	return texts
 }

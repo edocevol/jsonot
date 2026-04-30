@@ -7,10 +7,14 @@ import (
 
 // ReplayResult is a transport-friendly mailbox replay decision.
 type ReplayResult struct {
-	SessionID      string     `json:"sessionId"`
-	Envelopes      []Envelope `json:"envelopes"`
-	LastAcked      string     `json:"lastAcked,omitempty"`
-	RequiresResync bool       `json:"requiresResync,omitempty"`
+	SessionID           string      `json:"sessionId"`
+	Envelopes           []Envelope  `json:"envelopes"`
+	LastAcked           string      `json:"lastAcked,omitempty"`
+	RequiresResync      bool        `json:"requiresResync,omitempty"`
+	Reason              StaleReason `json:"reason,omitempty"`
+	CurrentVersion      int         `json:"currentVersion,omitempty"`
+	MinSupportedVersion int         `json:"minSupportedVersion,omitempty"`
+	MaxRebaseGap        int         `json:"maxRebaseGap,omitempty"`
 }
 
 // ReplaySessionMailbox replays envelopes for a session after the provided cursor.
@@ -27,6 +31,7 @@ func ReplaySessionMailbox(ctx context.Context, store MailboxStore, sessionID, af
 				SessionID:      sessionID,
 				LastAcked:      lastAcked,
 				RequiresResync: true,
+				Reason:         StaleReasonReplayCursorNotFound,
 			}, nil
 		}
 		return ReplayResult{}, err
