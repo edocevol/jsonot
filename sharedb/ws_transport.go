@@ -147,6 +147,14 @@ func (c *ClientConn) claimLiveAttachment(sessionID, documentID string) bool {
 	return true
 }
 
+func (c *ClientConn) hasLiveAttachment(sessionID, documentID string) bool {
+	key := sessionID + "\x00" + documentID
+	c.liveMu.Lock()
+	defer c.liveMu.Unlock()
+	_, exists := c.liveKeys[key]
+	return exists
+}
+
 func (c *ClientConn) readLoop(handler InboundHandler) {
 	for {
 		_, payload, err := c.conn.ReadMessage()
