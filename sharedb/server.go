@@ -246,7 +246,7 @@ func (s *Server) GetSnapshotAt(ctx context.Context, documentID string, version i
 		return Snapshot{DocumentID: documentID, Version: rec.Version, Document: append(json.RawMessage(nil), rec.Doc...)}, nil
 	}
 
-	document, err := s.reconstructSnapshotAt(ctx, documentID, rec.Doc, version, rec.Version)
+	document, err := s.documentAtVersion(ctx, rec, version)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -501,7 +501,7 @@ func (s *Server) RollbackToVersion(ctx context.Context, documentID string, targe
 		return SubmitResult{Version: rec.Version, Operation: json.RawMessage("[]"), Document: append(json.RawMessage(nil), rec.Doc...)}, nil
 	}
 
-	rollbackOp, rollbackDoc, err := s.buildRollback(ctx, documentID, rec.Doc, targetVersion, rec.Version)
+	rollbackOp, rollbackDoc, err := s.rollbackToVersionOperation(ctx, rec, targetVersion)
 	if err != nil {
 		return SubmitResult{}, err
 	}
@@ -638,17 +638,17 @@ func (r OpRecord) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func (s *Server) reconstructSnapshotAt(ctx context.Context, documentID string, currentDocument json.RawMessage, targetVersion, currentVersion int) (json.RawMessage, error) {
-	ops, err := s.GetOperations(ctx, documentID, targetVersion, currentVersion)
+func (s *Server) documentAtVersion(ctx context.Context, rec DocRecord, targetVersion int) (json.RawMessage, error) {
+	ops, err := s.GetOperations(ctx, rec.DocumentID, targetVersion, rec.Version)
 	if err != nil {
 		return nil, err
 	}
-	docValue, err := jsonot.UnmarshalValue(currentDocument)
+	docValue, err := jsonot.UnmarshalValue(rec.Doc)
 	if err != nil {
 		return nil, err
 	}
 	for i := len(ops) - 1; i >= 0; i-- {
-		inverse, err := s.invertCommittedOperation(ops[i])
+		inverse, err := s.inverseOperation(ops[i])
 		if err != nil {
 			return nil, err
 		}
@@ -661,18 +661,18 @@ func (s *Server) reconstructSnapshotAt(ctx context.Context, documentID string, c
 	return append(json.RawMessage(nil), docValue.RawMessage()...), nil
 }
 
-func (s *Server) buildRollback(ctx context.Context, documentID string, currentDocument json.RawMessage, targetVersion, currentVersion int) (*jsonot.Operation, json.RawMessage, error) {
-	ops, err := s.GetOperations(ctx, documentID, targetVersion, currentVersion)
+func (s *Server) rollbackToVersionOperation(ctx context.Context, rec DocRecord, targetVersion int) (*jsonot.Operation, json.RawMessage, error) {
+	ops, err := s.GetOperations(ctx, rec.DocumentID, targetVersion, rec.Version)
 	if err != nil {
 		return nil, nil, err
 	}
-	docValue, err := jsonot.UnmarshalValue(currentDocument)
+	docValue, err := jsonot.UnmarshalValue(rec.Doc)
 	if err != nil {
 		return nil, nil, err
 	}
 	rollback := jsonot.NewOperation([]*jsonot.OperationComponent{})
 	for i := len(ops) - 1; i >= 0; i-- {
-		inverse, err := s.invertCommittedOperation(ops[i])
+		inverse, err := s.inverseOperation(ops[i])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -689,7 +689,7 @@ func (s *Server) buildRollback(ctx context.Context, documentID string, currentDo
 	return rollback, append(json.RawMessage(nil), docValue.RawMessage()...), nil
 }
 
-func (s *Server) invertCommittedOperation(opRec OpRecord) (*jsonot.Operation, error) {
+func (s *Server) inverseOperation(opRec OpRecord) (*jsonot.Operation, error) {
 	op, err := s.getOrParseCommittedOperation(opRec)
 	if err != nil {
 		return nil, err
